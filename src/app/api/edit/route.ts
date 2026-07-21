@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { proposeEdit, type EditContext } from "@/lib/anthropic";
 import { retrieveKb } from "@/lib/kb";
+import { unverifiedAdditions } from "@/lib/verify";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -44,7 +45,13 @@ export async function POST(req: NextRequest) {
       { ...body, kbSnippets },
       body.model || undefined,
     );
-    return NextResponse.json({ ...result, kbUsed: kbSnippets?.length ?? 0 });
+    // Flag new numbers/proper-names in the edit not traceable to the source or KB.
+    const warnings = unverifiedAdditions(
+      body.blockText,
+      result.newText,
+      kbSnippets?.map((s) => s.text) ?? [],
+    );
+    return NextResponse.json({ ...result, kbUsed: kbSnippets?.length ?? 0, warnings });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : "Edit failed.";
     console.error("[/api/edit]", msg);

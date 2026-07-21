@@ -192,6 +192,7 @@ export default function Editor() {
         action,
         instruction,
         kbUsed: data.kbUsed ?? 0,
+        warnings: data.warnings ?? [],
       });
     } catch (e) {
       if (reqRef.current !== myReq) return;

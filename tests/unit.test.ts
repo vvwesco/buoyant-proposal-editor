@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { wordDiff, retainedFraction } from "@/lib/diffWords";
 import { retrieveKb } from "@/lib/kb";
 import { isCapsHeading, classify, detectColumns, dedupeItems, type RawItem } from "@/lib/pdf";
+import { unverifiedAdditions } from "@/lib/verify";
 
 describe("wordDiff / retainedFraction", () => {
   it("marks only the changed words", () => {
@@ -70,6 +71,30 @@ function makeItems(columns: { x: number; w: number }[], rows: number): RawItem[]
   }
   return items;
 }
+
+describe("unverifiedAdditions (verifier)", () => {
+  it("flags a fabricated number and project name not in the source", () => {
+    const before = "MECO provides civil engineering services to municipalities.";
+    const after =
+      "MECO provides civil engineering services to municipalities, including the $12 million Fulton Water Plant.";
+    const flags = unverifiedAdditions(before, after, []);
+    expect(flags.some((f) => f.kind === "number" && f.value === "12")).toBe(true);
+    expect(flags.some((f) => f.kind === "name" && /Fulton Water Plant/.test(f.value))).toBe(true);
+  });
+
+  it("does not flag facts that appear in the KB snippets", () => {
+    const before = "MECO has strong bridge experience.";
+    const after = "MECO has strong bridge experience, such as the County Road 372 Bridge.";
+    const kb = ["Lewis County: County Road 372 Bridge over Little Fabius River."];
+    expect(unverifiedAdditions(before, after, kb)).toHaveLength(0);
+  });
+
+  it("flags nothing for a pure tightening that keeps the same facts", () => {
+    const before = "MECO Engineering is celebrating its 40th anniversary this year.";
+    const after = "MECO Engineering celebrates its 40th anniversary this year.";
+    expect(unverifiedAdditions(before, after, [])).toHaveLength(0);
+  });
+});
 
 describe("dedupeItems", () => {
   const item = (str: string, x: number, y: number, fontSize = 12): RawItem => ({

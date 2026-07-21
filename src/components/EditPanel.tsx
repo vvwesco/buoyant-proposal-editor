@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { Block, Suggestion } from "@/lib/types";
+import type { Flag } from "@/lib/verify";
 import { wordDiff } from "@/lib/diffWords";
 
 // Symmetric change size: added + removed characters over the whole diff, so a
@@ -25,6 +26,7 @@ export interface Proposal {
   action: string;
   instruction: string;
   kbUsed: number;
+  warnings: Flag[];
 }
 
 const PRESETS: { id: string; label: string; instruction: string; kb?: boolean }[] = [
@@ -229,6 +231,22 @@ export default function EditPanel({
 
           {proposal.rationale && (
             <p className="text-xs italic text-neutral-500">{proposal.rationale}</p>
+          )}
+          {proposal.warnings.length > 0 && (
+            <div className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800">
+              <span className="font-semibold">Verify before applying</span> - new
+              details not found in the original or your knowledge base:
+              <div className="mt-1 flex flex-wrap gap-1">
+                {proposal.warnings.map((w, i) => (
+                  <span
+                    key={i}
+                    className="rounded border border-red-200 bg-white px-1.5 py-0.5 font-medium"
+                  >
+                    {w.value}
+                  </span>
+                ))}
+              </div>
+            </div>
           )}
           {proposal.usedFacts.length > 0 && (
             <div className="rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800">
