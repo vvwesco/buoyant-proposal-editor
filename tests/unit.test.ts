@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { wordDiff, retainedFraction } from "@/lib/diffWords";
 import { retrieveKb } from "@/lib/kb";
-import { isCapsHeading, classify, detectColumns, type RawItem } from "@/lib/pdf";
+import { isCapsHeading, classify, detectColumns, dedupeItems, type RawItem } from "@/lib/pdf";
 
 describe("wordDiff / retainedFraction", () => {
   it("marks only the changed words", () => {
@@ -70,6 +70,25 @@ function makeItems(columns: { x: number; w: number }[], rows: number): RawItem[]
   }
   return items;
 }
+
+describe("dedupeItems", () => {
+  const item = (str: string, x: number, y: number, fontSize = 12): RawItem => ({
+    str, x, y, w: str.length * fontSize * 0.5, h: fontSize, fontSize,
+  });
+  it("collapses layered drop-shadow copies at nearly the same spot", () => {
+    const items = [
+      item("Thank You", 100, 200, 40),
+      item("Thank You", 101.5, 201, 40), // shadow copy, ~1.5pt offset
+      item("Thank You", 99, 199, 40), // outline copy
+    ];
+    const out = dedupeItems(items);
+    expect(out).toHaveLength(1);
+  });
+  it("keeps genuinely repeated words that are far apart", () => {
+    const items = [item("MO", 100, 200), item("MO", 300, 200), item("MO", 100, 260)];
+    expect(dedupeItems(items)).toHaveLength(3);
+  });
+});
 
 describe("detectColumns", () => {
   it("returns null for a single-column page (identical old path)", () => {

@@ -78,18 +78,24 @@ export async function parsePdf(
       continue;
     }
 
+    // Collapse layered/drop-shadow duplicates before anything else. InDesign
+    // cover pages render the same display text 2-3 times at nearly the same
+    // position (fill + shadow/outline), which otherwise reads as
+    // "Thank You Thank You Thank You".
+    const clean = dedupeItems(items);
+
     // --- detect columns, then run the line->paragraph pipeline per column ---
     // Column-major ordering: process detected columns strictly left-to-right so
     // the blocks array ends up ordered (page, column, y). Single-column pages fall
     // through the else-branch and behave exactly like the original single pass.
-    const columns = detectColumns(items);
+    const columns = detectColumns(clean);
     if (columns && columns.length > 1) {
-      const buckets = assignToColumns(items, columns);
+      const buckets = assignToColumns(clean, columns);
       for (let c = 0; c < buckets.length; c++) {
         processColumn(buckets[c], p, blocks);
       }
     } else {
-      processColumn(items, p, blocks);
+      processColumn(clean, p, blocks);
     }
 
     onProgress?.(p, doc.numPages);
@@ -178,6 +184,44 @@ function processColumn(items: RawItem[], p: number, blocks: Block[]): void {
     cur.push(ln);
   }
   flush();
+}
+
+// InDesign display type is often layered (a fill plus one or two shadow/outline
+// copies) drawn at nearly the same position, so raw extraction repeats it and a
+// title reads as "Thank You Thank You Thank You". Drop an item when an identical
+// string already sits within a small, font-scaled distance. A coarse spatial
+// hash keeps this O(n); genuine repeated words sit far more than one word apart,
+// so they are never collapsed.
+export function dedupeItems(items: RawItem[]): RawItem[] {
+  const CELL = 8;
+  const buckets = new Map<string, RawItem[]>();
+  const kept: RawItem[] = [];
+  for (const it of items) {
+    const s = it.str.trim();
+    const cx = Math.floor(it.x / CELL);
+    const cy = Math.floor(it.y / CELL);
+    const tol = Math.max(3, it.fontSize * 0.35);
+    let dup = false;
+    for (let dx = -1; dx <= 1 && !dup; dx++) {
+      for (let dy = -1; dy <= 1 && !dup; dy++) {
+        const b = buckets.get(`${cx + dx},${cy + dy}`);
+        if (!b) continue;
+        for (const k of b) {
+          if (k.str.trim() === s && Math.abs(k.x - it.x) <= tol && Math.abs(k.y - it.y) <= tol) {
+            dup = true;
+            break;
+          }
+        }
+      }
+    }
+    if (dup) continue;
+    kept.push(it);
+    const key = `${cx},${cy}`;
+    const arr = buckets.get(key);
+    if (arr) arr.push(it);
+    else buckets.set(key, [it]);
+  }
+  return kept;
 }
 
 // A detected column band, in top-left page coordinates. lo/hi are the x extent
