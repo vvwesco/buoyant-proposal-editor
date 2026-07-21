@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Block } from "@/lib/types";
+import type { Block, Suggestion } from "@/lib/types";
 import { wordDiff } from "@/lib/diffWords";
 
 // Symmetric change size: added + removed characters over the whole diff, so a
@@ -40,6 +40,8 @@ export default function EditPanel({
   proposal,
   loading,
   error,
+  suggestions,
+  suggesting,
   onRun,
   onAccept,
   onReject,
@@ -48,6 +50,8 @@ export default function EditPanel({
   proposal: Proposal | null;
   loading: boolean;
   error: string | null;
+  suggestions: Suggestion[];
+  suggesting: boolean;
   onRun: (action: string, instruction: string, useKb: boolean) => void;
   onAccept: () => void;
   onReject: () => void;
@@ -94,17 +98,52 @@ export default function EditPanel({
 
       {!proposal && (
         <>
-          <div className="flex flex-wrap gap-1.5">
-            {PRESETS.map((p) => (
-              <button
-                key={p.id}
-                disabled={loading}
-                onClick={() => onRun(p.id, p.instruction, !!p.kb)}
-                className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-medium text-neutral-700 transition-colors hover:border-sky-300 hover:bg-sky-50 hover:text-sky-700 disabled:opacity-50"
-              >
-                {p.label}
-              </button>
-            ))}
+          {/* Content-tailored suggestions (generated per paragraph) */}
+          {(suggesting || suggestions.length > 0) && (
+            <div>
+              <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-violet-500">
+                Suggested for this paragraph
+              </div>
+              {suggesting && suggestions.length === 0 ? (
+                <div className="flex flex-col gap-1.5">
+                  {[0, 1].map((i) => (
+                    <div key={i} className="h-7 animate-pulse rounded-md bg-neutral-100" />
+                  ))}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  {suggestions.map((s, i) => (
+                    <button
+                      key={i}
+                      disabled={loading}
+                      title={s.instruction}
+                      onClick={() => onRun("suggested", s.instruction, false)}
+                      className="rounded-md border border-violet-200 bg-violet-50/60 px-3 py-1.5 text-left text-xs font-medium text-violet-800 transition-colors hover:bg-violet-100 disabled:opacity-50"
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div>
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
+              Quick actions
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {PRESETS.map((p) => (
+                <button
+                  key={p.id}
+                  disabled={loading}
+                  onClick={() => onRun(p.id, p.instruction, !!p.kb)}
+                  className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-medium text-neutral-700 transition-colors hover:border-sky-300 hover:bg-sky-50 hover:text-sky-700 disabled:opacity-50"
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="mt-1">

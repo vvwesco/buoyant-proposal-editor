@@ -1,5 +1,7 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
+import type { Suggestion } from "./types";
+export type { Suggestion };
 
 // Server-only Anthropic client, pointed at Buoyant's proxy. The token never
 // reaches the browser — all edit calls go through /api/edit.
@@ -124,4 +126,70 @@ Call propose_edit with the revised paragraph.`;
     rationale: input.rationale ?? "",
     usedFacts: input.usedFacts ?? [],
   };
+}
+
+// Suggestions are advisory and read constantly, so use the cheapest fast model.
+const SUGGEST_MODEL = process.env.SUGGEST_MODEL ?? "claude-haiku-4-5-20251001";
+
+const SUGGEST_SYSTEM = `You suggest 2-3 edit actions a proposal writer might want for ONE specific paragraph of a civil-engineering Statement of Qualifications. Tailor them to the actual content of the paragraph:
+- If a sentence is long or rambling, suggest tightening it.
+- If a client, city, or place name appears, suggest confirming or changing it.
+- If it makes a general claim that a concrete project could support, suggest adding a specific example from past work.
+- If the tone is weak or generic, suggest strengthening it for a selection committee.
+Each suggestion has a short imperative button label (2-4 words, Title Case) and a one-sentence instruction the editor will follow. Prefer the 2-3 most useful and specific options for THIS text over generic ones. Never invent facts.`;
+
+export async function suggestActions(ctx: {
+  blockText: string;
+  heading?: string;
+  docMeta?: string;
+}): Promise<Suggestion[]> {
+  const resp = await client.messages.create({
+    model: SUGGEST_MODEL,
+    max_tokens: 500,
+    temperature: 0.4,
+    system: SUGGEST_SYSTEM,
+    tools: [
+      {
+        name: "suggest_actions",
+        description: "Return 2-3 tailored edit suggestions for the paragraph.",
+        input_schema: {
+          type: "object",
+          properties: {
+            suggestions: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  label: { type: "string" },
+                  instruction: { type: "string" },
+                },
+                required: ["label", "instruction"],
+              },
+            },
+          },
+          required: ["suggestions"],
+        },
+      },
+    ],
+    tool_choice: { type: "tool", name: "suggest_actions" },
+    messages: [
+      {
+        role: "user",
+        content: `Document: ${ctx.docMeta ?? "civil-engineering proposal"}
+${ctx.heading ? `Section: ${ctx.heading}\n` : ""}Paragraph:
+"""
+${ctx.blockText}
+"""
+Suggest 2-3 tailored edit actions.`,
+      },
+    ],
+  });
+  const tool = resp.content.find((b) => b.type === "tool_use") as
+    | Anthropic.ToolUseBlock
+    | undefined;
+  const raw = (tool?.input as { suggestions?: Suggestion[] })?.suggestions ?? [];
+  return raw
+    .filter((s) => s.label?.trim() && s.instruction?.trim())
+    .slice(0, 3)
+    .map((s) => ({ label: s.label.trim(), instruction: s.instruction.trim() }));
 }

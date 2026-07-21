@@ -41,6 +41,12 @@ export interface EditRecord {
   at: number;
 }
 
+// A content-tailored edit suggestion offered when a paragraph is selected.
+export interface Suggestion {
+  label: string; // short button text
+  instruction: string; // what the edit will do if clicked
+}
+
 export interface EditProposal {
   newText: string;
   rationale: string;

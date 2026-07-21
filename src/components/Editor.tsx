@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ParsedDoc } from "@/lib/types";
+import type { ParsedDoc, Suggestion } from "@/lib/types";
 import { parsePdf } from "@/lib/pdf";
 import PdfPane from "./PdfPane";
 import EditPanel, { type Proposal } from "./EditPanel";
@@ -34,6 +34,9 @@ export default function Editor() {
   const [showFR, setShowFR] = useState(false);
   const [trackChanges, setTrackChanges] = useState(true);
   const [sessionKb, setSessionKb] = useState<{ name: string; text: string }[]>([]);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [suggesting, setSuggesting] = useState(false);
+  const suggestCache = useRef<Map<string, Suggestion[]>>(new Map());
   const opSeq = useRef(0);
   const cache = useRef<Map<string, { doc: ParsedDoc; buf: ArrayBuffer }>>(new Map());
   // Monotonic id used to drop stale in-flight edit responses when the user
@@ -45,6 +48,53 @@ export default function Editor() {
     [doc],
   );
   const selectedBlock = doc?.blocks.find((b) => b.id === selectedId) ?? null;
+
+  // Fetch content-tailored suggestions when a substantial paragraph is selected
+  // (not while a proposal is open, and not for tiny headings/labels). Cached per
+  // block+text and cancelled on change so stale results never land.
+  useEffect(() => {
+    const block = selectedBlock;
+    if (!block || proposal || block.text.trim().length < 40) {
+      setSuggestions([]);
+      setSuggesting(false);
+      return;
+    }
+    const key = `${block.id}:${block.text.length}`;
+    const cached = suggestCache.current.get(key);
+    if (cached) {
+      setSuggestions(cached);
+      return;
+    }
+    let cancelled = false;
+    setSuggestions([]);
+    setSuggesting(true);
+    const idx = doc ? doc.blocks.findIndex((b) => b.id === block.id) : -1;
+    const heading = doc
+      ? [...doc.blocks.slice(0, idx)].reverse().find((b) => b.type === "heading")?.text
+      : undefined;
+    fetch("/api/suggest", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        blockText: block.text,
+        heading,
+        docMeta: doc?.fileName.replace(/\.pdf$/, ""),
+      }),
+    })
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        const s = (d.suggestions ?? []) as Suggestion[];
+        suggestCache.current.set(key, s);
+        setSuggestions(s);
+      })
+      .catch(() => !cancelled && setSuggestions([]))
+      .finally(() => !cancelled && setSuggesting(false));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, proposal, selectedBlock?.text]);
 
   const load = useCallback(async (buf: ArrayBuffer, name: string) => {
     setError(null);
@@ -361,6 +411,8 @@ export default function Editor() {
               proposal={proposal}
               loading={loading}
               error={error}
+              suggestions={suggestions}
+              suggesting={suggesting}
               onRun={runEdit}
               onAccept={applyProposal}
               onReject={() => setProposal(null)}
