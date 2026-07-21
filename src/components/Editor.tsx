@@ -284,7 +284,7 @@ function Header({
             disabled={!canUndo}
             className="rounded-md border border-neutral-200 px-2.5 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-40"
           >
-            ↶ Undo
+            Undo
           </button>
           <button
             onClick={onExport}
@@ -326,7 +326,7 @@ function Landing({
         <p className="mx-auto mt-2 max-w-md text-sm text-neutral-500">
           Upload a proposal PDF. We recover its structure so you can select any
           paragraph and ask AI to rewrite, tighten, fix names, or ground it in
-          your past work — then review every change before it lands.
+          your past work, then review every change before it lands.
         </p>
 
         <label

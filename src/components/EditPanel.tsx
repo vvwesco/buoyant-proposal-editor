@@ -46,7 +46,7 @@ export default function EditPanel({
   if (!block) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-center text-sm text-neutral-400">
-        Select a paragraph — on the page or in the document — to edit it with AI.
+        Select a paragraph in the document to edit it with AI.
       </div>
     );
   }
@@ -81,7 +81,7 @@ export default function EditPanel({
             <textarea
               value={instruction}
               onChange={(e) => setInstruction(e.target.value)}
-              placeholder="Or type an instruction… e.g. “Change the client to City of Rolla” or “mention our 40 years of experience”."
+              placeholder={'Or type an instruction. e.g. "Change the client to City of Rolla" or "mention our 40 years of experience".'}
               rows={3}
               className="w-full resize-none rounded-md border border-neutral-200 p-2 text-sm outline-none focus:border-sky-400 focus:ring-2 focus:ring-sky-100"
               onKeyDown={(e) => {
@@ -104,8 +104,9 @@ export default function EditPanel({
                 disabled={loading || !instruction.trim()}
                 onClick={() => onRun("custom", instruction.trim(), useKb)}
                 className="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-sky-700 disabled:opacity-40"
+                title="Cmd/Ctrl + Enter"
               >
-                {loading ? "Thinking…" : "Generate  ⌘⏎"}
+                {loading ? "Thinking..." : "Generate"}
               </button>
             </div>
           </div>
