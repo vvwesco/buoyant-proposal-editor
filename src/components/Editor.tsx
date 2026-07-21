@@ -10,6 +10,8 @@ import EditPanel, { type Proposal } from "./EditPanel";
 type Change = { blockId: string; before: string; after: string };
 type Op = { id: string; label: string; changes: Change[] };
 
+const EMPTY_SET: Set<string> = new Set();
+
 // Content hash so re-uploading the exact same bytes reuses the cached parse,
 // while a different file that happens to share a name/size does not collide.
 async function hashBuf(buf: ArrayBuffer): Promise<string> {
@@ -30,6 +32,8 @@ export default function Editor() {
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<Op[]>([]);
   const [showFR, setShowFR] = useState(false);
+  const [trackChanges, setTrackChanges] = useState(true);
+  const [sessionKb, setSessionKb] = useState<{ name: string; text: string }[]>([]);
   const opSeq = useRef(0);
   const cache = useRef<Map<string, { doc: ParsedDoc; buf: ArrayBuffer }>>(new Map());
   // Monotonic id used to drop stale in-flight edit responses when the user
@@ -68,10 +72,32 @@ export default function Editor() {
     }
   }, []);
 
+  const isPdf = (f: File) =>
+    f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf");
+
   const onUpload = async (file: File) => {
-    if (file.type !== "application/pdf") return setError("Please upload a PDF.");
+    if (!isPdf(file)) return setError("Please choose a PDF.");
     await load(await file.arrayBuffer(), file.name);
   };
+
+  // Add supplementary reference PDFs (past proposals, resumes) to this session's
+  // knowledge base. Their text grounds "Add from past work" edits. Session-only:
+  // parsed in the browser, never uploaded or persisted.
+  const onAddKb = async (files: FileList | File[]) => {
+    const pdfs = Array.from(files).filter(isPdf);
+    for (const f of pdfs) {
+      try {
+        const parsed = await parsePdf(await f.arrayBuffer(), f.name);
+        const text = parsed.blocks.map((b) => b.text).join("\n");
+        setSessionKb((prev) => [...prev.filter((k) => k.name !== f.name), { name: f.name, text }]);
+      } catch {
+        setError(`Could not read ${f.name}.`);
+      }
+    }
+  };
+
+  const removeKb = (name: string) =>
+    setSessionKb((prev) => prev.filter((k) => k.name !== name));
 
   const loadSample = async (which: "easy" | "hard") => {
     setError(null);
@@ -101,6 +127,7 @@ export default function Editor() {
           after: doc.blocks[idx + 1]?.text,
           docMeta: doc.fileName.replace(/\.pdf$/, ""),
           useKb,
+          sessionKb,
         }),
       });
       const data = await res.json();
@@ -176,6 +203,31 @@ export default function Editor() {
     return changes.length;
   };
 
+  // Return to the start screen. Confirm first if there are unsaved edits.
+  const goHome = () => {
+    if (history.length && !window.confirm("Discard your edits and return to the start screen?"))
+      return;
+    setDoc(null);
+    setFileBuf(null);
+    setSelectedId(null);
+    setProposal(null);
+    setHistory([]);
+    setShowFR(false);
+    setError(null);
+    setSessionKb([]);
+  };
+
+  // Revert every edited paragraph back to its originally parsed text.
+  const revertAll = () => {
+    if (!doc || !history.length) return;
+    if (!window.confirm("Revert all edits back to the original text?")) return;
+    setDoc({ ...doc, blocks: doc.blocks.map((b) => ({ ...b, text: b.original })) });
+    setHistory([]);
+    setProposal(null);
+  };
+
+  const exportBase = () => (doc ? doc.fileName.replace(/\.pdf$/i, "") + " - edited" : "proposal");
+
   const exportDoc = () => {
     if (!doc) return;
     const md = doc.blocks
@@ -184,7 +236,7 @@ export default function Editor() {
     const blob = new Blob([md], { type: "text/markdown" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = doc.fileName.replace(/\.pdf$/, "") + ".edited.md";
+    a.download = exportBase() + ".md";
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -238,7 +290,7 @@ export default function Editor() {
       pdf.setPage(p);
       pdf.text(`Page ${p} of ${pages}`, pageW / 2, pageH - margin / 2, { align: "center" });
     }
-    pdf.save(title + ".edited.pdf");
+    pdf.save(exportBase() + ".pdf");
   };
 
   // Shared selection used by both panes so clicking in one highlights the other.
@@ -257,11 +309,18 @@ export default function Editor() {
         canUndo={history.length > 0}
         editCount={history.length}
         frActive={showFR}
+        trackChanges={trackChanges}
+        sessionKb={sessionKb}
+        onHome={goHome}
+        onToggleTrack={() => setTrackChanges((v) => !v)}
+        onRevertAll={revertAll}
         onFindReplace={() => setShowFR((v) => !v)}
         onUndo={undo}
         onExportPdf={exportPdf}
         onExportMd={exportDoc}
-        onUpload={onUpload}
+        onAddKb={onAddKb}
+        onRemoveKb={removeKb}
+        onReplaceDoc={onUpload}
       />
 
       {doc && showFR && (
@@ -286,13 +345,14 @@ export default function Editor() {
             fileBuf={fileBuf}
             doc={doc}
             selectedId={selectedId}
-            editedIds={editedIds}
+            editedIds={trackChanges ? editedIds : EMPTY_SET}
             onSelect={select}
           />
           <DocPane
             doc={doc}
             selectedId={selectedId}
             editedIds={editedIds}
+            trackChanges={trackChanges}
             onSelect={select}
           />
           <div className="bg-white">
@@ -405,11 +465,13 @@ function DocPane({
   doc,
   selectedId,
   editedIds,
+  trackChanges,
   onSelect,
 }: {
   doc: ParsedDoc;
   selectedId: string | null;
   editedIds: Set<string>;
+  trackChanges: boolean;
   onSelect: (id: string) => void;
 }) {
   // Scroll to the selected block when the selection comes from the PDF pane.
@@ -436,13 +498,13 @@ function DocPane({
         )}
         {doc.blocks.map((b) => {
           const sel = b.id === selectedId;
-          const edited = editedIds.has(b.id);
+          const marked = editedIds.has(b.id) && trackChanges; // track-changes marking
           const base =
             "block w-full cursor-pointer rounded-md px-2 py-1 text-left transition-colors";
           const tone = sel
             ? "bg-sky-50 ring-2 ring-sky-400"
-            : edited
-              ? "bg-emerald-50/70 hover:bg-emerald-50 ring-1 ring-emerald-200"
+            : marked
+              ? "border-l-[3px] border-amber-400 bg-amber-50/50 hover:bg-amber-50 rounded-l-none"
               : "hover:bg-neutral-100 ring-1 ring-transparent";
           return (
             <button
@@ -454,8 +516,8 @@ function DocPane({
               }`}
             >
               {b.text}
-              {edited && (
-                <span className="ml-2 align-middle text-[10px] font-semibold uppercase text-emerald-600">
+              {marked && (
+                <span className="ml-2 align-middle text-[10px] font-semibold uppercase text-amber-600">
                   edited
                 </span>
               )}
@@ -472,34 +534,71 @@ function Header({
   canUndo,
   editCount,
   frActive,
+  trackChanges,
+  sessionKb,
+  onHome,
+  onToggleTrack,
+  onRevertAll,
   onFindReplace,
   onUndo,
   onExportPdf,
   onExportMd,
-  onUpload,
+  onAddKb,
+  onRemoveKb,
+  onReplaceDoc,
 }: {
   docName?: string;
   canUndo: boolean;
   editCount: number;
   frActive: boolean;
+  trackChanges: boolean;
+  sessionKb: { name: string; text: string }[];
+  onHome: () => void;
+  onToggleTrack: () => void;
+  onRevertAll: () => void;
   onFindReplace: () => void;
   onUndo: () => void;
   onExportPdf: () => void;
   onExportMd: () => void;
-  onUpload: (f: File) => void;
+  onAddKb: (files: FileList) => void;
+  onRemoveKb: (name: string) => void;
+  onReplaceDoc: (f: File) => void;
 }) {
+  const btn =
+    "rounded-md border border-neutral-200 px-2.5 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50";
+  const closeMenu = (e: { currentTarget: HTMLElement }) =>
+    e.currentTarget.closest("details")?.removeAttribute("open");
   return (
     <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2.5">
-      <div className="flex items-baseline gap-2">
+      <button
+        onClick={onHome}
+        title={docName ? "Back to start" : undefined}
+        className="flex items-baseline gap-2 rounded-md px-1 py-0.5 hover:bg-neutral-100"
+      >
         <span className="text-sm font-bold tracking-tight text-sky-700">Buoyant</span>
         <span className="text-sm text-neutral-400">Proposal Editor</span>
-        {docName && <span className="ml-2 text-xs text-neutral-400">· {docName}</span>}
-      </div>
+        {docName && <span className="ml-1 text-xs text-neutral-400">· {docName}</span>}
+      </button>
       {docName && (
         <div className="flex items-center gap-2">
           <span className="text-xs text-neutral-400">
             {editCount} edit{editCount === 1 ? "" : "s"}
           </span>
+          <button
+            onClick={onToggleTrack}
+            title="Show or hide markers on edited paragraphs"
+            className={`rounded-md border px-2.5 py-1 text-xs font-medium ${
+              trackChanges
+                ? "border-amber-300 bg-amber-50 text-amber-700"
+                : "border-neutral-200 text-neutral-700 hover:bg-neutral-50"
+            }`}
+          >
+            Track changes
+          </button>
+          <button onClick={onRevertAll} disabled={!canUndo} className={`${btn} disabled:opacity-40`}>
+            Revert all
+          </button>
+          <span className="mx-1 h-4 w-px bg-neutral-200" />
           <button
             onClick={onFindReplace}
             className={`rounded-md border px-2.5 py-1 text-xs font-medium ${
@@ -510,45 +609,66 @@ function Header({
           >
             Find &amp; replace
           </button>
-          <button
-            onClick={onUndo}
-            disabled={!canUndo}
-            className="rounded-md border border-neutral-200 px-2.5 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:opacity-40"
-          >
+          <button onClick={onUndo} disabled={!canUndo} className={`${btn} disabled:opacity-40`}>
             Undo
           </button>
+
+          {/* Reference files (session knowledge base) */}
           <details className="relative [&_summary::-webkit-details-marker]:hidden">
-            <summary className="cursor-pointer list-none rounded-md border border-neutral-200 px-2.5 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50">
-              Export
+            <summary className={`${btn} cursor-pointer list-none`}>
+              Reference files{sessionKb.length ? ` (${sessionKb.length})` : ""}
             </summary>
-            <div className="absolute right-0 z-20 mt-1 w-40 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 shadow-lg">
-              <button
-                onClick={(e) => {
-                  onExportPdf();
-                  e.currentTarget.closest("details")?.removeAttribute("open");
-                }}
-                className="block w-full px-3 py-1.5 text-left text-xs text-neutral-700 hover:bg-sky-50"
-              >
+            <div className="absolute right-0 z-20 mt-1 w-72 rounded-md border border-neutral-200 bg-white p-2 shadow-lg">
+              <p className="px-1 pb-2 text-[11px] leading-snug text-neutral-500">
+                Add past proposals or resumes to ground &quot;Add from past work&quot; edits.
+                Session only; parsed in your browser, never uploaded.
+              </p>
+              {sessionKb.map((k) => (
+                <div key={k.name} className="flex items-center justify-between gap-2 px-1 py-0.5 text-xs">
+                  <span className="truncate text-neutral-700">{k.name}</span>
+                  <button
+                    onClick={() => onRemoveKb(k.name)}
+                    className="shrink-0 text-neutral-400 hover:text-red-600"
+                  >
+                    remove
+                  </button>
+                </div>
+              ))}
+              <label className="mt-2 block cursor-pointer rounded-md border border-dashed border-neutral-300 px-3 py-2 text-center text-xs text-neutral-600 hover:border-sky-300 hover:bg-sky-50">
+                Add reference PDFs
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files?.length) onAddKb(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+              </label>
+            </div>
+          </details>
+
+          <details className="relative [&_summary::-webkit-details-marker]:hidden">
+            <summary className={`${btn} cursor-pointer list-none`}>Export</summary>
+            <div className="absolute right-0 z-20 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 shadow-lg">
+              <button onClick={(e) => { onExportPdf(); closeMenu(e); }} className="block w-full px-3 py-1.5 text-left text-xs text-neutral-700 hover:bg-sky-50">
                 PDF (edited proposal)
               </button>
-              <button
-                onClick={(e) => {
-                  onExportMd();
-                  e.currentTarget.closest("details")?.removeAttribute("open");
-                }}
-                className="block w-full px-3 py-1.5 text-left text-xs text-neutral-700 hover:bg-sky-50"
-              >
+              <button onClick={(e) => { onExportMd(); closeMenu(e); }} className="block w-full px-3 py-1.5 text-left text-xs text-neutral-700 hover:bg-sky-50">
                 Markdown
               </button>
             </div>
           </details>
+
           <label className="cursor-pointer rounded-md bg-neutral-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-neutral-700">
-            Upload
+            Open PDF
             <input
               type="file"
               accept="application/pdf"
               className="hidden"
-              onChange={(e) => e.target.files?.[0] && onUpload(e.target.files[0])}
+              onChange={(e) => e.target.files?.[0] && onReplaceDoc(e.target.files[0])}
             />
           </label>
         </div>

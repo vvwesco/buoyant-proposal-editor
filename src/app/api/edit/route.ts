@@ -8,6 +8,7 @@ export const maxDuration = 60;
 interface Body extends Omit<EditContext, "kbSnippets"> {
   useKb?: boolean;
   model?: string;
+  sessionKb?: { name: string; text: string }[];
 }
 
 export async function POST(req: NextRequest) {
@@ -31,9 +32,11 @@ export async function POST(req: NextRequest) {
   }
 
   const kbSnippets = body.useKb
-    ? retrieveKb(`${body.instruction} ${body.heading ?? ""} ${body.blockText}`, 4).map(
-        (c) => ({ project: c.project, text: c.text }),
-      )
+    ? retrieveKb(
+        `${body.instruction} ${body.heading ?? ""} ${body.blockText}`,
+        4,
+        body.sessionKb ?? [],
+      ).map((c) => ({ project: c.project, text: c.text }))
     : undefined;
 
   try {

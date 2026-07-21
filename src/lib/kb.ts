@@ -37,10 +37,29 @@ function chunks(): KbChunk[] {
   return out;
 }
 
-export function retrieveKb(query: string, k = 4): KbChunk[] {
+// Turn session-uploaded reference files (parsed to text in the browser) into
+// chunks, so user-supplied past work grounds edits alongside the bundled corpus.
+function sessionChunks(extra: { name: string; text: string }[]): KbChunk[] {
+  const out: KbChunk[] = [];
+  for (const d of extra) {
+    for (const para of d.text.split(/\n{1,}/)) {
+      const t = para.replace(/\s+/g, " ").trim();
+      if (t.length >= 60) out.push({ docId: d.name, project: d.name, text: t });
+    }
+  }
+  return out;
+}
+
+export function retrieveKb(
+  query: string,
+  k = 4,
+  extra: { name: string; text: string }[] = [],
+): KbChunk[] {
   const q = new Set(tokens(query));
   if (!q.size) return [];
-  const scored = chunks().map((c) => {
+  const scored = chunks()
+    .concat(sessionChunks(extra))
+    .map((c) => {
     const ts = tokens(c.text);
     let hits = 0;
     for (const t of ts) if (q.has(t)) hits++;
