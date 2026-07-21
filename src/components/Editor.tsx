@@ -7,6 +7,7 @@ import { literalReplaceAll, countMatches } from "@/lib/replace";
 import PdfPane from "./PdfPane";
 import EditPanel, { type Proposal } from "./EditPanel";
 import CompliancePanel from "./CompliancePanel";
+import ChatPanel from "./ChatPanel";
 
 // An undoable operation. An AI edit touches one block; find-replace touches many.
 type Change = { blockId: string; before: string; after: string };
@@ -35,6 +36,7 @@ export default function Editor() {
   const [history, setHistory] = useState<Op[]>([]);
   const [showFR, setShowFR] = useState(false);
   const [showCompliance, setShowCompliance] = useState(false);
+  const [showChat, setShowChat] = useState(false);
   const [trackChanges, setTrackChanges] = useState(true);
   const [sessionKb, setSessionKb] = useState<{ name: string; text: string }[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -384,10 +386,18 @@ export default function Editor() {
         editCount={history.length}
         frActive={showFR}
         complianceActive={showCompliance}
+        chatActive={showChat}
         trackChanges={trackChanges}
         sessionKb={sessionKb}
         onHome={goHome}
-        onToggleCompliance={() => setShowCompliance((v) => !v)}
+        onToggleCompliance={() => {
+          setShowCompliance((v) => !v);
+          setShowChat(false);
+        }}
+        onToggleChat={() => {
+          setShowChat((v) => !v);
+          setShowCompliance(false);
+        }}
         onToggleTrack={() => setTrackChanges((v) => !v)}
         onRevertAll={revertAll}
         onFindReplace={() => setShowFR((v) => !v)}
@@ -433,7 +443,15 @@ export default function Editor() {
             onSelect={select}
           />
           <div className="bg-white">
-            {showCompliance ? (
+            {showChat ? (
+              <ChatPanel
+                doc={doc}
+                docMeta={doc.fileName.replace(/\.pdf$/, "")}
+                sessionKb={sessionKb}
+                onApply={(changes, label) => commit(changes, label)}
+                onSelectBlock={select}
+              />
+            ) : showCompliance ? (
               <CompliancePanel doc={doc} onSelectBlock={select} />
             ) : (
               <EditPanel
@@ -613,10 +631,12 @@ function Header({
   editCount,
   frActive,
   complianceActive,
+  chatActive,
   trackChanges,
   sessionKb,
   onHome,
   onToggleCompliance,
+  onToggleChat,
   onToggleTrack,
   onRevertAll,
   onFindReplace,
@@ -633,10 +653,12 @@ function Header({
   editCount: number;
   frActive: boolean;
   complianceActive: boolean;
+  chatActive: boolean;
   trackChanges: boolean;
   sessionKb: { name: string; text: string }[];
   onHome: () => void;
   onToggleCompliance: () => void;
+  onToggleChat: () => void;
   onToggleTrack: () => void;
   onRevertAll: () => void;
   onFindReplace: () => void;
@@ -693,6 +715,17 @@ function Header({
             }`}
           >
             Compliance
+          </button>
+          <button
+            onClick={onToggleChat}
+            title="Make a change across many paragraphs at once"
+            className={`rounded-md border px-2.5 py-1 text-xs font-medium ${
+              chatActive
+                ? "border-sky-300 bg-sky-50 text-sky-700"
+                : "border-neutral-200 text-neutral-700 hover:bg-neutral-50"
+            }`}
+          >
+            Document edit
           </button>
           <button
             onClick={onFindReplace}

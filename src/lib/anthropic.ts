@@ -193,3 +193,87 @@ Suggest 2-3 tailored edit actions.`,
     .slice(0, 3)
     .map((s) => ({ label: s.label.trim(), instruction: s.instruction.trim() }));
 }
+
+// Multi-paragraph planning: turn one high-level request into a concrete set of
+// per-paragraph edits. Each planned edit is then executed through the normal
+// per-paragraph edit path (so it gets the same diff + verifier), and the user
+// reviews the batch.
+export interface PlanEdit {
+  blockId: string;
+  instruction: string;
+}
+export interface Plan {
+  message: string;
+  edits: PlanEdit[];
+}
+
+const PLAN_SYSTEM = `You turn a proposal writer's high-level request into a concrete set of per-paragraph edits across a civil-engineering Statement of Qualifications. You are given the request and a numbered list of the document's paragraphs, each with an id, its section heading, and its text. Decide which paragraphs actually need to change to satisfy the request, and for each write a single specific instruction an editor will apply to THAT paragraph only. Rules:
+- Only include paragraphs that genuinely need changing. Do not touch paragraphs the request does not affect.
+- Each per-paragraph instruction must be self-contained and faithful to the request; keep the change minimal.
+- Never invent facts (names, numbers, licenses, projects).
+- Also write one short sentence summarizing what you are about to change across the document.`;
+
+export async function planEdits(
+  instruction: string,
+  blocks: { id: string; heading?: string; text: string }[],
+  docMeta?: string,
+  model: string = DEFAULT_MODEL,
+): Promise<Plan> {
+  const list = blocks
+    .map((b) => `[${b.id}]${b.heading ? ` (${b.heading})` : ""} ${b.text.slice(0, 260)}`)
+    .join("\n");
+  const resp = await client.messages.create({
+    model,
+    max_tokens: 2000,
+    system: PLAN_SYSTEM,
+    tools: [
+      {
+        name: "plan_edits",
+        description: "Return the per-paragraph edit plan.",
+        input_schema: {
+          type: "object",
+          properties: {
+            message: { type: "string", description: "One-sentence summary of the plan." },
+            edits: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  blockId: { type: "string", description: "The id of the paragraph to edit." },
+                  instruction: {
+                    type: "string",
+                    description: "Specific instruction for that paragraph.",
+                  },
+                },
+                required: ["blockId", "instruction"],
+              },
+            },
+          },
+          required: ["message", "edits"],
+        },
+      },
+    ],
+    tool_choice: { type: "tool", name: "plan_edits" },
+    messages: [
+      {
+        role: "user",
+        content: `Document: ${docMeta ?? "civil-engineering proposal"}
+Request: ${instruction}
+
+Paragraphs:
+${list}
+
+Call plan_edits with the paragraphs to change and a specific instruction for each.`,
+      },
+    ],
+  });
+  const tool = resp.content.find((b) => b.type === "tool_use") as
+    | Anthropic.ToolUseBlock
+    | undefined;
+  const input = tool?.input as { message?: string; edits?: PlanEdit[] } | undefined;
+  const valid = new Set(blocks.map((b) => b.id));
+  const edits = (input?.edits ?? [])
+    .filter((e) => e.blockId && valid.has(e.blockId) && e.instruction?.trim())
+    .map((e) => ({ blockId: e.blockId, instruction: e.instruction.trim() }));
+  return { message: input?.message?.trim() || "Proposed changes:", edits };
+}
