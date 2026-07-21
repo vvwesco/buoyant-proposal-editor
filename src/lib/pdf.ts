@@ -3,12 +3,23 @@
 // Client-side PDF structure recovery.
 //
 // PDFs expose glyphs at (x,y), not paragraphs. We rebuild structure with a
-// deterministic, geometry-first pipeline (no LLM — fast, free, cacheable):
-//   text items  ->  lines (cluster by y)  ->  paragraphs (split on vertical
-//   gaps / font changes)  ->  classify headings (font size & length).
+// deterministic, geometry-first pipeline (no LLM - fast, free, cacheable):
+//   text items  ->  columns (detect vertical gutters)  ->  lines (cluster by y
+//   within a column)  ->  paragraphs (split on vertical gaps / font changes)  ->
+//   classify headings (font size and length).
 // This is intentionally the cheap path; the LLM budget is spent on EDITS, not
-// parsing. Works cleanly on the single-column easy fixture; degrades gracefully
-// on complex layouts (see README "failure modes").
+// parsing. Works cleanly on the single-column easy fixture; recovers columns on
+// complex multi-column layouts (see README "failure modes").
+//
+// Multi-column note: many SOQ resume/bio pages put a narrow sidebar list (office
+// location, area of expertise, education, registrations) beside a wide body
+// column. Sorting purely by y interleaves the two, so a sidebar heading like
+// "AREA OF EXPERTISE/DESIGN" absorbs body text from the other column. Before line
+// clustering we detect the vertical gutter(s) that separate columns, bucket items
+// per column, run the existing line->paragraph pipeline independently per column,
+// and emit blocks column-major (page, then column left-to-right, then y top down).
+// If only one column is detected the behavior is byte-for-byte identical to the
+// old single-pass code.
 
 import type { ParsedDoc, Block, BlockType } from "./types";
 
@@ -67,82 +78,277 @@ export async function parsePdf(
       continue;
     }
 
-    // --- cluster items into lines by y proximity ---
-    items.sort((a, b) => a.y - b.y || a.x - b.x);
-    const lines: RawItem[][] = [];
-    const yTol = Math.max(3, medianFont(items) * 0.6);
-    for (const it of items) {
-      const last = lines[lines.length - 1];
-      if (last && Math.abs(last[0].y - it.y) <= yTol) last.push(it);
-      else lines.push([it]);
+    // --- detect columns, then run the line->paragraph pipeline per column ---
+    // Column-major ordering: process detected columns strictly left-to-right so
+    // the blocks array ends up ordered (page, column, y). Single-column pages fall
+    // through the else-branch and behave exactly like the original single pass.
+    const columns = detectColumns(items);
+    if (columns && columns.length > 1) {
+      const buckets = assignToColumns(items, columns);
+      for (let c = 0; c < buckets.length; c++) {
+        processColumn(buckets[c], p, blocks);
+      }
+    } else {
+      processColumn(items, p, blocks);
     }
 
-    // Build line records: joined text, x-range, font, y.
-    const lineRecs = lines.map((ln) => {
-      ln.sort((a, b) => a.x - b.x);
-      const text = joinLine(ln);
-      const fontSize = median(ln.map((i) => i.fontSize));
-      const x = Math.min(...ln.map((i) => i.x));
-      const right = Math.max(...ln.map((i) => i.x + i.w));
-      const y = median(ln.map((i) => i.y));
-      const h = Math.max(...ln.map((i) => i.h));
-      return { text, fontSize, x, right, y, h };
-    });
-
-    const bodyFont = medianLineFont(lineRecs);
-
-    // --- group lines into paragraphs ---
-    let cur: typeof lineRecs = [];
-    const flush = () => {
-      if (!cur.length) return;
-      const text = cur
-        .map((l) => l.text)
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (text) {
-        const fontSize = median(cur.map((l) => l.fontSize));
-        const x = Math.min(...cur.map((l) => l.x));
-        const right = Math.max(...cur.map((l) => l.right));
-        const y0 = Math.min(...cur.map((l) => l.y));
-        const y1 = Math.max(...cur.map((l) => l.y + l.h));
-        const type = classify(text, fontSize, bodyFont);
-        blocks.push({
-          id: uid("b"),
-          type,
-          text,
-          original: text,
-          page: p,
-          bbox: { page: p, x, y: y0, w: right - x, h: y1 - y0 },
-          fontSize,
-          edited: false,
-        });
-      }
-      cur = [];
-    };
-
-    for (let i = 0; i < lineRecs.length; i++) {
-      const ln = lineRecs[i];
-      const prev = lineRecs[i - 1];
-      if (prev) {
-        const gap = ln.y - prev.y;
-        const bigGap = gap > prev.h * 1.8;
-        const fontJump = Math.abs(ln.fontSize - prev.fontSize) > bodyFont * 0.25;
-        const isHeadingLine = ln.fontSize > bodyFont * 1.25;
-        // Many SOQ section headings ("OUR FIRM", "RELEVANT EXPERIENCE") are set
-        // in the body font, so gap/font tests miss them. Split whenever a line
-        // crosses the all-caps-heading boundary, so a heading never absorbs the
-        // paragraph beneath it.
-        const headingTransition = isCapsHeading(prev.text) !== isCapsHeading(ln.text);
-        if (bigGap || fontJump || isHeadingLine || headingTransition) flush();
-      }
-      cur.push(ln);
-    }
-    flush();
     onProgress?.(p, doc.numPages);
   }
 
   return { fileName, numPages: doc.numPages, blocks, pageSizes };
+}
+
+// Run the deterministic line-clustering + paragraph-grouping pipeline over one
+// set of items (a single column, or the whole page when no columns are found)
+// and append the resulting blocks. This is the exact logic the original parser
+// ran once over every page item, so a single-column page produces identical
+// output. Blocks are appended in top-to-bottom (y) order.
+function processColumn(items: RawItem[], p: number, blocks: Block[]): void {
+  if (!items.length) return;
+
+  // --- cluster items into lines by y proximity ---
+  items.sort((a, b) => a.y - b.y || a.x - b.x);
+  const lines: RawItem[][] = [];
+  const yTol = Math.max(3, medianFont(items) * 0.6);
+  for (const it of items) {
+    const last = lines[lines.length - 1];
+    if (last && Math.abs(last[0].y - it.y) <= yTol) last.push(it);
+    else lines.push([it]);
+  }
+
+  // Build line records: joined text, x-range, font, y.
+  const lineRecs = lines.map((ln) => {
+    ln.sort((a, b) => a.x - b.x);
+    const text = joinLine(ln);
+    const fontSize = median(ln.map((i) => i.fontSize));
+    const x = Math.min(...ln.map((i) => i.x));
+    const right = Math.max(...ln.map((i) => i.x + i.w));
+    const y = median(ln.map((i) => i.y));
+    const h = Math.max(...ln.map((i) => i.h));
+    return { text, fontSize, x, right, y, h };
+  });
+
+  const bodyFont = medianLineFont(lineRecs);
+
+  // --- group lines into paragraphs ---
+  let cur: typeof lineRecs = [];
+  const flush = () => {
+    if (!cur.length) return;
+    const text = cur
+      .map((l) => l.text)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text) {
+      const fontSize = median(cur.map((l) => l.fontSize));
+      const x = Math.min(...cur.map((l) => l.x));
+      const right = Math.max(...cur.map((l) => l.right));
+      const y0 = Math.min(...cur.map((l) => l.y));
+      const y1 = Math.max(...cur.map((l) => l.y + l.h));
+      const type = classify(text, fontSize, bodyFont);
+      blocks.push({
+        id: uid("b"),
+        type,
+        text,
+        original: text,
+        page: p,
+        bbox: { page: p, x, y: y0, w: right - x, h: y1 - y0 },
+        fontSize,
+        edited: false,
+      });
+    }
+    cur = [];
+  };
+
+  for (let i = 0; i < lineRecs.length; i++) {
+    const ln = lineRecs[i];
+    const prev = lineRecs[i - 1];
+    if (prev) {
+      const gap = ln.y - prev.y;
+      const bigGap = gap > prev.h * 1.8;
+      const fontJump = Math.abs(ln.fontSize - prev.fontSize) > bodyFont * 0.25;
+      const isHeadingLine = ln.fontSize > bodyFont * 1.25;
+      // Many SOQ section headings ("OUR FIRM", "RELEVANT EXPERIENCE") are set
+      // in the body font, so gap/font tests miss them. Split whenever a line
+      // crosses the all-caps-heading boundary, so a heading never absorbs the
+      // paragraph beneath it.
+      const headingTransition = isCapsHeading(prev.text) !== isCapsHeading(ln.text);
+      if (bigGap || fontJump || isHeadingLine || headingTransition) flush();
+    }
+    cur.push(ln);
+  }
+  flush();
+}
+
+// A detected column band, in top-left page coordinates. lo/hi are the x extent
+// of the text actually assigned to the column (not the raw bin edges).
+interface Column {
+  lo: number;
+  hi: number;
+}
+
+// --- column detection via a vertical projection profile ---
+//
+// Idea (a one-level XY-cut): lay a coarse occupancy grid over the page, measure
+// how many vertical rows each thin x-slice occupies, and look for wide x-bands
+// that are essentially empty across the whole content height. Those are gutters.
+// The populated bands between/around them are candidate columns. We only accept
+// a split when at least two candidate columns each carry real content that spans
+// most of the page height - so a centered heading with side margins, or a ragged
+// right margin, never fakes a column.
+//
+// Returns the columns left-to-right, or null when the page is single-column (the
+// caller then takes the original single-pass path, guaranteeing identical output).
+function detectColumns(items: RawItem[]): Column[] | null {
+  // Too little text to reason about columns reliably.
+  if (items.length < 12) return null;
+
+  const mFont = medianFont(items) || 10;
+
+  // Horizontal text extent of the page. We only hunt for gutters BETWEEN text,
+  // never in the page margins (which are trivially empty on both outer sides).
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let contentTop = Infinity;
+  let contentBottom = -Infinity;
+  for (const it of items) {
+    if (it.x < minX) minX = it.x;
+    if (it.x + it.w > maxX) maxX = it.x + it.w;
+    const top = it.y - it.h; // glyph rises from the baseline-ish y by ~one line
+    if (top < contentTop) contentTop = top;
+    if (it.y > contentBottom) contentBottom = it.y;
+  }
+  const spanX = maxX - minX;
+  const contentHeight = contentBottom - contentTop;
+  // Not enough horizontal room for two real columns plus a gutter.
+  if (spanX < 120 || contentHeight <= 0) return null;
+
+  // Grid resolution. xbin fine enough to locate a ~1-space gutter; ybin about a
+  // line tall so each text line marks roughly one row.
+  const xbin = Math.max(2, mFont * 0.35);
+  const ybin = Math.max(4, mFont * 0.9);
+  const nx = Math.max(1, Math.ceil(spanX / xbin));
+  const ny = Math.max(1, Math.ceil(contentHeight / ybin));
+
+  // occ[xb] = number of distinct y-rows that have any ink in this x-slice.
+  // Using a per-slice Set of rows measures vertical coverage, which is what
+  // "spans most of the page height" really means (immune to glyph item counts).
+  const rowsByX: Array<Set<number>> = Array.from({ length: nx }, () => new Set<number>());
+  for (const it of items) {
+    const xa = Math.max(0, Math.floor((it.x - minX) / xbin));
+    const xbEnd = Math.min(nx - 1, Math.floor((it.x + it.w - minX - 1e-6) / xbin));
+    const yTopBin = Math.max(0, Math.floor((it.y - it.h - contentTop) / ybin));
+    const yBotBin = Math.min(ny - 1, Math.floor((it.y - contentTop) / ybin));
+    for (let xb = xa; xb <= xbEnd; xb++) {
+      const rows = rowsByX[xb];
+      for (let yb = yTopBin; yb <= yBotBin; yb++) rows.add(yb);
+    }
+  }
+  const occ = rowsByX.map((s) => s.size);
+  const maxOcc = Math.max(...occ);
+  if (maxOcc <= 0) return null;
+
+  // An x-slice counts as empty (part of a gutter) when almost no rows touch it.
+  // A small allowance (5% of the densest slice) lets an occasional full-width
+  // line cross the gutter without vetoing an otherwise clean separation.
+  const emptyMax = Math.max(0, Math.floor(maxOcc * 0.05));
+  const isEmpty = occ.map((v) => v <= emptyMax);
+
+  // A gutter must be at least this wide to be believed (about 1.2 line-heights).
+  // On the SOQ bio pages the real gutter is ~30pt; interior word-spacing rivers
+  // are both narrower and not empty across the full height, so they do not match.
+  const minGutterBins = Math.max(1, Math.ceil((mFont * 1.2) / xbin));
+
+  // Collect interior empty runs wide enough to be gutters. We ignore empty runs
+  // touching bin 0 or bin nx-1 (those are just the outer text margins).
+  const gutters: Array<{ start: number; end: number }> = [];
+  let run = -1;
+  for (let xb = 0; xb < nx; xb++) {
+    if (isEmpty[xb]) {
+      if (run < 0) run = xb;
+    } else if (run >= 0) {
+      registerGutter(run, xb - 1);
+      run = -1;
+    }
+  }
+  if (run >= 0) registerGutter(run, nx - 1);
+  function registerGutter(start: number, end: number) {
+    if (start === 0 || end === nx - 1) return; // outer margin, not a gutter
+    if (end - start + 1 >= minGutterBins) gutters.push({ start, end });
+  }
+  if (!gutters.length) return null;
+
+  // Cut the content x-range at each gutter into candidate column segments.
+  const cuts: Array<[number, number]> = []; // [startBin, endBin] inclusive, non-empty spans
+  let segStart = 0;
+  for (const g of gutters) {
+    if (g.start - 1 >= segStart) cuts.push([segStart, g.start - 1]);
+    segStart = g.end + 1;
+  }
+  if (segStart <= nx - 1) cuts.push([segStart, nx - 1]);
+
+  // Score each candidate segment by the real items that fall inside it, and keep
+  // only segments that carry meaningful content spanning most of the page height.
+  const minItems = Math.max(3, Math.floor(items.length * 0.05));
+  const minSpan = contentHeight * 0.45;
+  const kept: Column[] = [];
+  for (const [sb, eb] of cuts) {
+    const loEdge = minX + sb * xbin;
+    const hiEdge = minX + (eb + 1) * xbin;
+    let cnt = 0;
+    let lo = Infinity;
+    let hi = -Infinity;
+    let top = Infinity;
+    let bot = -Infinity;
+    for (const it of items) {
+      const cx = it.x + it.w / 2;
+      if (cx < loEdge || cx >= hiEdge) continue;
+      cnt++;
+      if (it.x < lo) lo = it.x;
+      if (it.x + it.w > hi) hi = it.x + it.w;
+      if (it.y - it.h < top) top = it.y - it.h;
+      if (it.y > bot) bot = it.y;
+    }
+    if (cnt >= minItems && bot - top >= minSpan) kept.push({ lo, hi });
+  }
+
+  // Need at least two genuine columns for a split to be worthwhile; otherwise the
+  // page is effectively single-column and must go down the identical path.
+  if (kept.length < 2) return null;
+  kept.sort((a, b) => a.lo - b.lo);
+  return kept;
+}
+
+// Assign every item to exactly one detected column, so no glyph is dropped. An
+// item goes to the column its center-x lands in; a straggler that falls inside a
+// gutter (e.g. a full-width heading, or punctuation nudged past the edge) is
+// attached to the nearest column by center distance.
+function assignToColumns(items: RawItem[], columns: Column[]): RawItem[][] {
+  const buckets: RawItem[][] = columns.map(() => []);
+  for (const it of items) {
+    const cx = it.x + it.w / 2;
+    let idx = -1;
+    for (let c = 0; c < columns.length; c++) {
+      if (cx >= columns[c].lo && cx <= columns[c].hi) {
+        idx = c;
+        break;
+      }
+    }
+    if (idx < 0) {
+      // Nearest column by distance from its band.
+      let best = Infinity;
+      for (let c = 0; c < columns.length; c++) {
+        const col = columns[c];
+        const d = cx < col.lo ? col.lo - cx : cx - col.hi;
+        if (d < best) {
+          best = d;
+          idx = c;
+        }
+      }
+    }
+    buckets[idx].push(it);
+  }
+  return buckets;
 }
 
 // Some SOQ cover pages render display type with letter-spacing ("S t a t e m e n t").
@@ -153,7 +359,7 @@ function joinLine(items: RawItem[]): string {
   return s;
 }
 
-// A short, mostly-uppercase line — the shape of an SOQ section heading.
+// A short, mostly-uppercase line - the shape of an SOQ section heading.
 function isCapsHeading(text: string): boolean {
   const words = text.trim().split(/\s+/);
   if (words.length > 7) return false;
