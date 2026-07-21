@@ -494,7 +494,7 @@ export default function Editor() {
             trackChanges={trackChanges}
             onSelect={select}
           />
-          <div className="bg-white">
+          <div className="min-h-0 overflow-hidden bg-white">
             {showChat ? (
               <ChatPanel
                 doc={doc}

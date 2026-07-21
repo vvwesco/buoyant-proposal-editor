@@ -171,7 +171,7 @@ export default function ChatPanel({
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto p-3">
+      <div className="min-h-0 flex-1 overflow-auto p-3">
         {error && (
           <div className="rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700">{error}</div>
         )}

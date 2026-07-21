@@ -230,7 +230,7 @@ export default function CompliancePanel({
       )}
 
       {/* Body */}
-      <div className="flex-1 overflow-auto p-3">
+      <div className="min-h-0 flex-1 overflow-auto p-3">
         {checking && !rows && (
           <div className="flex flex-col gap-2">
             {[0, 1, 2, 3].map((i) => (
