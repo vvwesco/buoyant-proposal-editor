@@ -294,10 +294,13 @@ export function detectColumns(items: RawItem[]): Column[] | null {
   const maxOcc = Math.max(...occ);
   if (maxOcc <= 0) return null;
 
-  // An x-slice counts as empty (part of a gutter) when almost no rows touch it.
-  // A small allowance (5% of the densest slice) lets an occasional full-width
-  // line cross the gutter without vetoing an otherwise clean separation.
-  const emptyMax = Math.max(0, Math.floor(maxOcc * 0.05));
+  // An x-slice counts as "gutter" when few rows touch it relative to the densest
+  // column. This is a fraction rather than near-zero because two ragged text
+  // columns (e.g. project lists with varying line lengths) leave a low VALLEY
+  // between them, not an empty band. Interior low runs (we ignore the margins)
+  // reliably mark a real gutter, and the per-column density scoring below rejects
+  // a false split, so a generous threshold is safe.
+  const emptyMax = Math.max(2, Math.floor(maxOcc * 0.25));
   const isEmpty = occ.map((v) => v <= emptyMax);
 
   // A gutter must be at least this wide to be believed (about 1.2 line-heights).
@@ -339,23 +342,23 @@ export function detectColumns(items: RawItem[]): Column[] | null {
   const minSpan = contentHeight * 0.45;
   const kept: Column[] = [];
   for (const [sb, eb] of cuts) {
+    // Column bounds are the GUTTER-based cut edges, not the item extents. A
+    // full-width line (a title or intro sentence) whose center sits in this cut
+    // but which stretches across the gutter would otherwise inflate the bound and
+    // make columns overlap, so the wrong column swallows the other's items.
     const loEdge = minX + sb * xbin;
     const hiEdge = minX + (eb + 1) * xbin;
     let cnt = 0;
-    let lo = Infinity;
-    let hi = -Infinity;
     let top = Infinity;
     let bot = -Infinity;
     for (const it of items) {
       const cx = it.x + it.w / 2;
       if (cx < loEdge || cx >= hiEdge) continue;
       cnt++;
-      if (it.x < lo) lo = it.x;
-      if (it.x + it.w > hi) hi = it.x + it.w;
       if (it.y - it.h < top) top = it.y - it.h;
       if (it.y > bot) bot = it.y;
     }
-    if (cnt >= minItems && bot - top >= minSpan) kept.push({ lo, hi });
+    if (cnt >= minItems && bot - top >= minSpan) kept.push({ lo: loEdge, hi: hiEdge });
   }
 
   // Need at least two genuine columns for a split to be worthwhile; otherwise the
