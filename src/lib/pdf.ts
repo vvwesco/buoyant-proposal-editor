@@ -164,20 +164,5 @@ function median(xs: number[]): number {
 const medianFont = (items: RawItem[]) => median(items.map((i) => i.fontSize));
 const medianLineFont = (lns: { fontSize: number }[]) => median(lns.map((l) => l.fontSize));
 
-// Render a page to a canvas for the reference pane.
-export async function renderPage(
-  data: ArrayBuffer,
-  pageNum: number,
-  canvas: HTMLCanvasElement,
-  scale = 1.5,
-): Promise<{ width: number; height: number }> {
-  const pdfjs = await getPdfjs();
-  const doc = await pdfjs.getDocument({ data: data.slice(0) }).promise;
-  const page = await doc.getPage(pageNum);
-  const viewport = page.getViewport({ scale });
-  const ctx = canvas.getContext("2d")!;
-  canvas.width = viewport.width;
-  canvas.height = viewport.height;
-  await page.render({ canvasContext: ctx, viewport, canvas }).promise;
-  return { width: viewport.width, height: viewport.height };
-}
+// Note: we intentionally don't rasterize pages ourselves — the reference pane
+// uses the browser's native PDF viewer (see PdfPane). pdfjs here is parse-only.

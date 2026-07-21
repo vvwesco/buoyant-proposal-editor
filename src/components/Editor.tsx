@@ -174,17 +174,8 @@ export default function Editor() {
       )}
 
       {doc && fileBuf && (
-        <div className="grid flex-1 grid-cols-[1.15fr_1fr_360px] overflow-hidden divide-x divide-neutral-200">
-          <PdfPane
-            fileBuf={fileBuf}
-            doc={doc}
-            selectedId={selectedId}
-            editedIds={editedIds}
-            onSelect={(id) => {
-              setSelectedId(id);
-              setProposal(null);
-            }}
-          />
+        <div className="grid flex-1 grid-cols-[1fr_1.05fr_380px] overflow-hidden divide-x divide-neutral-200">
+          <PdfPane fileBuf={fileBuf} />
           <DocPane
             doc={doc}
             selectedId={selectedId}
