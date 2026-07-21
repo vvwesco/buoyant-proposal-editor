@@ -6,6 +6,7 @@ import { parsePdf } from "@/lib/pdf";
 import { literalReplaceAll, countMatches } from "@/lib/replace";
 import PdfPane from "./PdfPane";
 import EditPanel, { type Proposal } from "./EditPanel";
+import CompliancePanel from "./CompliancePanel";
 
 // An undoable operation. An AI edit touches one block; find-replace touches many.
 type Change = { blockId: string; before: string; after: string };
@@ -33,6 +34,7 @@ export default function Editor() {
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<Op[]>([]);
   const [showFR, setShowFR] = useState(false);
+  const [showCompliance, setShowCompliance] = useState(false);
   const [trackChanges, setTrackChanges] = useState(true);
   const [sessionKb, setSessionKb] = useState<{ name: string; text: string }[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -381,9 +383,11 @@ export default function Editor() {
         canUndo={history.length > 0}
         editCount={history.length}
         frActive={showFR}
+        complianceActive={showCompliance}
         trackChanges={trackChanges}
         sessionKb={sessionKb}
         onHome={goHome}
+        onToggleCompliance={() => setShowCompliance((v) => !v)}
         onToggleTrack={() => setTrackChanges((v) => !v)}
         onRevertAll={revertAll}
         onFindReplace={() => setShowFR((v) => !v)}
@@ -429,17 +433,21 @@ export default function Editor() {
             onSelect={select}
           />
           <div className="bg-white">
-            <EditPanel
-              block={selectedBlock}
-              proposal={proposal}
-              loading={loading}
-              error={error}
-              suggestions={suggestions}
-              suggesting={suggesting}
-              onRun={runEdit}
-              onAccept={applyProposal}
-              onReject={() => setProposal(null)}
-            />
+            {showCompliance ? (
+              <CompliancePanel doc={doc} onSelectBlock={select} />
+            ) : (
+              <EditPanel
+                block={selectedBlock}
+                proposal={proposal}
+                loading={loading}
+                error={error}
+                suggestions={suggestions}
+                suggesting={suggesting}
+                onRun={runEdit}
+                onAccept={applyProposal}
+                onReject={() => setProposal(null)}
+              />
+            )}
           </div>
         </div>
       )}
@@ -604,9 +612,11 @@ function Header({
   canUndo,
   editCount,
   frActive,
+  complianceActive,
   trackChanges,
   sessionKb,
   onHome,
+  onToggleCompliance,
   onToggleTrack,
   onRevertAll,
   onFindReplace,
@@ -622,9 +632,11 @@ function Header({
   canUndo: boolean;
   editCount: number;
   frActive: boolean;
+  complianceActive: boolean;
   trackChanges: boolean;
   sessionKb: { name: string; text: string }[];
   onHome: () => void;
+  onToggleCompliance: () => void;
   onToggleTrack: () => void;
   onRevertAll: () => void;
   onFindReplace: () => void;
@@ -671,6 +683,17 @@ function Header({
             Revert all
           </button>
           <span className="mx-1 h-4 w-px bg-neutral-200" />
+          <button
+            onClick={onToggleCompliance}
+            title="Check the draft against an RFP"
+            className={`rounded-md border px-2.5 py-1 text-xs font-medium ${
+              complianceActive
+                ? "border-sky-300 bg-sky-50 text-sky-700"
+                : "border-neutral-200 text-neutral-700 hover:bg-neutral-50"
+            }`}
+          >
+            Compliance
+          </button>
           <button
             onClick={onFindReplace}
             className={`rounded-md border px-2.5 py-1 text-xs font-medium ${
