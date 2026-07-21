@@ -1,10 +1,14 @@
 "use client";
 
 import { useCallback, useMemo, useRef, useState } from "react";
-import type { ParsedDoc, Block, EditRecord } from "@/lib/types";
+import type { ParsedDoc } from "@/lib/types";
 import { parsePdf } from "@/lib/pdf";
 import PdfPane from "./PdfPane";
 import EditPanel, { type Proposal } from "./EditPanel";
+
+// An undoable operation. An AI edit touches one block; find-replace touches many.
+type Change = { blockId: string; before: string; after: string };
+type Op = { id: string; label: string; changes: Change[] };
 
 export default function Editor() {
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
@@ -14,7 +18,9 @@ export default function Editor() {
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [history, setHistory] = useState<EditRecord[]>([]);
+  const [history, setHistory] = useState<Op[]>([]);
+  const [showFR, setShowFR] = useState(false);
+  const opSeq = useRef(0);
   const cache = useRef<Map<string, { doc: ParsedDoc; buf: ArrayBuffer }>>(new Map());
   // Monotonic id used to drop stale in-flight edit responses when the user
   // switches blocks or starts another edit before the previous one returns.
@@ -108,40 +114,56 @@ export default function Editor() {
     }
   };
 
-  const applyProposal = () => {
-    if (!proposal || !doc) return;
+  // Apply a set of block changes as one undoable operation.
+  const commit = (changes: Change[], label: string) => {
+    if (!doc || !changes.length) return;
+    const after = new Map(changes.map((c) => [c.blockId, c.after]));
     setDoc({
       ...doc,
       blocks: doc.blocks.map((b) =>
-        b.id === proposal.blockId ? { ...b, text: proposal.after, edited: true } : b,
+        after.has(b.id) ? { ...b, text: after.get(b.id)!, edited: true } : b,
       ),
     });
-    setHistory((h) => [
-      ...h,
-      {
-        id: `e_${h.length}`,
-        blockId: proposal.blockId,
-        before: proposal.before,
-        after: proposal.after,
-        instruction: proposal.instruction,
-        action: proposal.action,
-        rationale: proposal.rationale,
-        at: history.length,
-      },
-    ]);
+    setHistory((h) => [...h, { id: `op_${opSeq.current++}`, label, changes }]);
+  };
+
+  const applyProposal = () => {
+    if (!proposal) return;
+    commit(
+      [{ blockId: proposal.blockId, before: proposal.before, after: proposal.after }],
+      proposal.action,
+    );
     setProposal(null);
   };
 
   const undo = () => {
     if (!history.length || !doc) return;
     const last = history[history.length - 1];
+    const before = new Map(last.changes.map((c) => [c.blockId, c.before]));
     setDoc({
       ...doc,
-      blocks: doc.blocks.map((b) => (b.id === last.blockId ? { ...b, text: last.before } : b)),
+      blocks: doc.blocks.map((b) =>
+        before.has(b.id) ? { ...b, text: before.get(b.id)! } : b,
+      ),
     });
     setHistory((h) => h.slice(0, -1));
     setProposal(null);
-    setSelectedId(last.blockId);
+    if (last.changes.length === 1) setSelectedId(last.changes[0].blockId);
+  };
+
+  // Deterministic global find-replace. The most common real task (fixing a
+  // client name across the doc) shouldn't cost an LLM call per paragraph, and a
+  // literal string swap must never be a fabrication surface.
+  const findReplace = (find: string, replace: string, ci: boolean): number => {
+    if (!doc || !find) return 0;
+    const re = new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ci ? "gi" : "g");
+    const changes: Change[] = [];
+    for (const b of doc.blocks) {
+      const next = b.text.replace(re, replace);
+      if (next !== b.text) changes.push({ blockId: b.id, before: b.text, after: next });
+    }
+    commit(changes, `replace "${find}"`);
+    return changes.length;
   };
 
   const exportDoc = () => {
@@ -163,10 +185,16 @@ export default function Editor() {
         docName={doc?.fileName}
         canUndo={history.length > 0}
         editCount={history.length}
+        frActive={showFR}
+        onFindReplace={() => setShowFR((v) => !v)}
         onUndo={undo}
         onExport={exportDoc}
         onUpload={onUpload}
       />
+
+      {doc && showFR && (
+        <FindReplaceBar doc={doc} onReplace={findReplace} onClose={() => setShowFR(false)} />
+      )}
 
       {!doc && !parsing && <Landing onSample={loadSample} onUpload={onUpload} error={error} />}
 
@@ -175,7 +203,7 @@ export default function Editor() {
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-neutral-300 border-t-sky-600" />
           <p className="text-sm">
             Recovering document structure
-            {parsing.total ? ` — page ${parsing.page}/${parsing.total}` : "…"}
+            {parsing.total ? ` - page ${parsing.page}/${parsing.total}` : "..."}
           </p>
         </div>
       )}
@@ -208,6 +236,95 @@ export default function Editor() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function FindReplaceBar({
+  doc,
+  onReplace,
+  onClose,
+}: {
+  doc: ParsedDoc;
+  onReplace: (find: string, replace: string, ci: boolean) => number;
+  onClose: () => void;
+}) {
+  const [find, setFind] = useState("");
+  const [replace, setReplace] = useState("");
+  const [ci, setCi] = useState(true);
+  const [result, setResult] = useState<string | null>(null);
+
+  const { blocks, occ } = useMemo(() => {
+    if (!find) return { blocks: 0, occ: 0 };
+    let b = 0;
+    let o = 0;
+    try {
+      const re = new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ci ? "gi" : "g");
+      for (const blk of doc.blocks) {
+        const m = blk.text.match(re);
+        if (m) {
+          b++;
+          o += m.length;
+        }
+      }
+    } catch {
+      /* invalid input mid-type */
+    }
+    return { blocks: b, occ: o };
+  }, [find, ci, doc]);
+
+  const run = () => {
+    const n = onReplace(find, replace, ci);
+    setResult(n ? `Replaced in ${n} paragraph${n === 1 ? "" : "s"}` : "No matches");
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-b border-neutral-200 bg-neutral-50 px-4 py-2 text-sm">
+      <input
+        autoFocus
+        value={find}
+        onChange={(e) => {
+          setFind(e.target.value);
+          setResult(null);
+        }}
+        placeholder="Find"
+        className="w-40 rounded-md border border-neutral-300 px-2 py-1 outline-none focus:border-sky-400"
+      />
+      <input
+        value={replace}
+        onChange={(e) => setReplace(e.target.value)}
+        placeholder="Replace with"
+        className="w-40 rounded-md border border-neutral-300 px-2 py-1 outline-none focus:border-sky-400"
+        onKeyDown={(e) => e.key === "Enter" && find && occ > 0 && run()}
+      />
+      <label className="flex items-center gap-1 text-xs text-neutral-500">
+        <input
+          type="checkbox"
+          checked={ci}
+          onChange={(e) => setCi(e.target.checked)}
+          className="accent-sky-600"
+        />
+        Ignore case
+      </label>
+      <span className="text-xs text-neutral-400">
+        {find
+          ? `${occ} match${occ === 1 ? "" : "es"} in ${blocks} paragraph${blocks === 1 ? "" : "s"}`
+          : "Deterministic, no AI, instantly undoable"}
+      </span>
+      <button
+        onClick={run}
+        disabled={!find || occ === 0}
+        className="rounded-md bg-sky-600 px-3 py-1 text-xs font-semibold text-white hover:bg-sky-700 disabled:opacity-40"
+      >
+        Replace all
+      </button>
+      {result && <span className="text-xs font-medium text-emerald-600">{result}</span>}
+      <button
+        onClick={onClose}
+        className="ml-auto rounded-md px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-200"
+      >
+        Close
+      </button>
     </div>
   );
 }
@@ -273,6 +390,8 @@ function Header({
   docName,
   canUndo,
   editCount,
+  frActive,
+  onFindReplace,
   onUndo,
   onExport,
   onUpload,
@@ -280,6 +399,8 @@ function Header({
   docName?: string;
   canUndo: boolean;
   editCount: number;
+  frActive: boolean;
+  onFindReplace: () => void;
   onUndo: () => void;
   onExport: () => void;
   onUpload: (f: File) => void;
@@ -296,6 +417,16 @@ function Header({
           <span className="text-xs text-neutral-400">
             {editCount} edit{editCount === 1 ? "" : "s"}
           </span>
+          <button
+            onClick={onFindReplace}
+            className={`rounded-md border px-2.5 py-1 text-xs font-medium ${
+              frActive
+                ? "border-sky-300 bg-sky-50 text-sky-700"
+                : "border-neutral-200 text-neutral-700 hover:bg-neutral-50"
+            }`}
+          >
+            Find &amp; replace
+          </button>
           <button
             onClick={onUndo}
             disabled={!canUndo}
