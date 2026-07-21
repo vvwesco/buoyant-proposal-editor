@@ -171,7 +171,7 @@ export default function EditPanel({
                 {changedPct}% changed
               </span>
             </div>
-            <div className="rounded-md border border-neutral-200 bg-white p-2 text-sm leading-relaxed">
+            <div className="max-h-[42vh] overflow-auto rounded-md border border-neutral-200 bg-white p-2 text-sm leading-relaxed">
               {wordDiff(proposal.before, proposal.after).map((part, i) =>
                 part.added ? (
                   <span key={i} className="rounded bg-emerald-100 text-emerald-800">
@@ -202,7 +202,7 @@ export default function EditPanel({
             </div>
           )}
 
-          <div className="mt-auto flex gap-2">
+          <div className="sticky bottom-0 -mx-4 -mb-4 mt-1 flex gap-2 border-t border-neutral-200 bg-white px-4 py-3">
             <button
               onClick={onAccept}
               title="Enter"
@@ -212,6 +212,7 @@ export default function EditPanel({
             </button>
             <button
               onClick={onReject}
+              title="Escape"
               className="rounded-md border border-neutral-200 px-3 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-50"
             >
               Discard
