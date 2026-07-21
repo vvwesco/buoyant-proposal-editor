@@ -149,8 +149,11 @@ function processColumn(items: RawItem[], p: number, blocks: Block[]): void {
       const fontSize = median(cur.map((l) => l.fontSize));
       const x = Math.min(...cur.map((l) => l.x));
       const right = Math.max(...cur.map((l) => l.right));
-      const y0 = Math.min(...cur.map((l) => l.y));
-      const y1 = Math.max(...cur.map((l) => l.y + l.h));
+      // l.y is the baseline (distance from page top); the glyphs rise above it by
+      // roughly the font height. Use the glyph top as the box top so the overlay
+      // hit-box sits ON the text, not shifted a line below it.
+      const y0 = Math.min(...cur.map((l) => l.y - l.h));
+      const y1 = Math.max(...cur.map((l) => l.y));
       const type = classify(text, fontSize, bodyFont);
       blocks.push({
         id: uid("b"),
@@ -160,7 +163,6 @@ function processColumn(items: RawItem[], p: number, blocks: Block[]): void {
         page: p,
         bbox: { page: p, x, y: y0, w: right - x, h: y1 - y0 },
         fontSize,
-        edited: false,
       });
     }
     cur = [];

@@ -67,14 +67,17 @@ orders them left-to-right. If fewer than two columns are found the page takes th
 identical single-pass path, so single-column pages are provably unchanged (covered by
 unit tests).
 
-### Two panes: fidelity on the left, editing in the middle
-- Left: the original PDF shown via the browser's native viewer (an iframe over a
-  blob). I deliberately do not re-rasterize with a pdfjs canvas: it bought perfect
-  fidelity nowhere and added a real failure surface (canvas render races). The brief
-  says faithful reconstruction is not the point, so the native viewer is strictly
-  better.
+### Three panes: original PDF, editable document, edit panel
+- Left: the original PDF, rendered by us with pdfjs (src/components/PdfPane.tsx) and a
+  transparent hit-box positioned over every recovered paragraph. This is what makes the
+  panes linked: click a paragraph in either the PDF or the editable document and the
+  match highlights and scrolls into view in the other, and edited paragraphs are tinted
+  on the page. (An earlier version used the browser's native PDF viewer in an iframe;
+  I moved back to our own canvas render specifically to get that overlay, since you
+  cannot position highlights over a native viewer.)
 - Middle: the reconstructed editable document. Every paragraph is a selectable unit,
-  and edited paragraphs are marked. This is where "interact with the content" happens.
+  and edited paragraphs carry a track-changes marker. This is where the editing happens.
+- Right: the edit panel (suggestions, actions, the diff, verifier warnings, accept/discard).
 
 The unit of interaction is the paragraph, the natural grain of the edits users
 actually ask for ("fix this sentence", "rewrite this section's intro").
@@ -111,11 +114,15 @@ Persistence is a v2 concern (see below), not a demo concern.
 
 ## What I cut and why
 
-- pdfjs canvas rendering of pages (with click-on-the-PDF overlay selection). I built
-  it, hit render races, and realized it was pure risk for zero product value; the
-  native viewer is more faithful. Cut it and kept selection in the reconstructed pane.
-  Highest-value cut: it removed an entire class of bugs.
-- Faithful export back to the original PDF layout. Export is Markdown of the edited
+- Re-rendering edited text back onto the original PDF image. The panes are linked
+  (click-to-highlight, edited-paragraph tint), but I stopped short of painting the new
+  text over the original glyphs on the canvas: covering original text and matching fonts
+  is fiddly and risks looking worse than it helps. The edited copy lives in the middle
+  pane and exports; the left pane stays a faithful reference. (I did go back and forth on
+  the left pane: native iframe first, then our own pdfjs canvas once linked selection
+  needed an overlay. See the panes note above.)
+- Faithful export back to the original PDF layout. Export is Markdown, DOCX, or a clean
+  paginated PDF of the edited
   model. Reconstructing the InDesign-grade SOQ layout is the "significant licensing
   cost" problem the brief calls out; not where the signal is.
 - Embeddings for KB retrieval. The corpus is 5 short proposals; keyword-overlap

@@ -3,6 +3,7 @@ import { wordDiff, retainedFraction } from "@/lib/diffWords";
 import { retrieveKb } from "@/lib/kb";
 import { isCapsHeading, classify, detectColumns, dedupeItems, type RawItem } from "@/lib/pdf";
 import { unverifiedAdditions } from "@/lib/verify";
+import { literalReplaceAll, countMatches } from "@/lib/replace";
 
 describe("wordDiff / retainedFraction", () => {
   it("marks only the changed words", () => {
@@ -71,6 +72,22 @@ function makeItems(columns: { x: number; w: number }[], rows: number): RawItem[]
   }
   return items;
 }
+
+describe("literalReplaceAll / countMatches", () => {
+  it("inserts a replacement containing $ verbatim (no special patterns)", () => {
+    expect(literalReplaceAll("cost is TBD here", "TBD", "$5,000", false)).toBe("cost is $5,000 here");
+    // $& would otherwise duplicate the match; ensure it does not
+    expect(literalReplaceAll("A TBD B", "TBD", "$&x", false)).toBe("A $&x B");
+  });
+  it("is case-insensitive when asked, and counts matches", () => {
+    expect(literalReplaceAll("Dixon and DIXON", "dixon", "Rolla", true)).toBe("Rolla and Rolla");
+    expect(countMatches("Dixon and DIXON and dixon", "dixon", true)).toBe(3);
+    expect(countMatches("Dixon and DIXON", "Dixon", false)).toBe(1);
+  });
+  it("treats the search term literally (regex chars escaped)", () => {
+    expect(countMatches("a.b a.b axb", "a.b", false)).toBe(2);
+  });
+});
 
 describe("unverifiedAdditions (verifier)", () => {
   it("flags a fabricated number and project name not in the source", () => {

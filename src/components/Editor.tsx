@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ParsedDoc, Suggestion } from "@/lib/types";
 import { parsePdf } from "@/lib/pdf";
+import { literalReplaceAll, countMatches } from "@/lib/replace";
 import PdfPane from "./PdfPane";
 import EditPanel, { type Proposal } from "./EditPanel";
 
@@ -209,7 +210,7 @@ export default function Editor() {
     setDoc({
       ...doc,
       blocks: doc.blocks.map((b) =>
-        after.has(b.id) ? { ...b, text: after.get(b.id)!, edited: true } : b,
+        after.has(b.id) ? { ...b, text: after.get(b.id)! } : b,
       ),
     });
     setHistory((h) => [...h, { id: `op_${opSeq.current++}`, label, changes }]);
@@ -244,10 +245,9 @@ export default function Editor() {
   // literal string swap must never be a fabrication surface.
   const findReplace = (find: string, replace: string, ci: boolean): number => {
     if (!doc || !find) return 0;
-    const re = new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ci ? "gi" : "g");
     const changes: Change[] = [];
     for (const b of doc.blocks) {
-      const next = b.text.replace(re, replace);
+      const next = literalReplaceAll(b.text, find, replace, ci);
       if (next !== b.text) changes.push({ blockId: b.id, before: b.text, after: next });
     }
     commit(changes, `replace "${find}"`);
@@ -344,6 +344,27 @@ export default function Editor() {
     pdf.save(exportBase() + ".pdf");
   };
 
+  // Export as a Word document - the surface AEC proposal writers actually live
+  // in and round-trip through. Headings map to Word heading styles.
+  const exportDocx = async () => {
+    if (!doc) return;
+    const { Document, Packer, Paragraph, HeadingLevel } = await import("docx");
+    const children = [
+      new Paragraph({ text: exportBase(), heading: HeadingLevel.TITLE }),
+      ...doc.blocks.map((b) =>
+        b.type === "heading"
+          ? new Paragraph({ text: b.text, heading: HeadingLevel.HEADING_2 })
+          : new Paragraph({ text: b.text }),
+      ),
+    ];
+    const blob = await Packer.toBlob(new Document({ sections: [{ children }] }));
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = exportBase() + ".docx";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
   // Shared selection used by both panes so clicking in one highlights the other.
   const select = (id: string) => {
     reqRef.current++; // invalidate any in-flight edit for the previously selected block
@@ -368,6 +389,7 @@ export default function Editor() {
         onFindReplace={() => setShowFR((v) => !v)}
         onUndo={undo}
         onExportPdf={exportPdf}
+        onExportDocx={exportDocx}
         onExportMd={exportDoc}
         onAddKb={onAddKb}
         onRemoveKb={removeKb}
@@ -443,17 +465,12 @@ function FindReplaceBar({
     if (!find) return { blocks: 0, occ: 0 };
     let b = 0;
     let o = 0;
-    try {
-      const re = new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), ci ? "gi" : "g");
-      for (const blk of doc.blocks) {
-        const m = blk.text.match(re);
-        if (m) {
-          b++;
-          o += m.length;
-        }
+    for (const blk of doc.blocks) {
+      const c = countMatches(blk.text, find, ci);
+      if (c) {
+        b++;
+        o += c;
       }
-    } catch {
-      /* invalid input mid-type */
     }
     return { blocks: b, occ: o };
   }, [find, ci, doc]);
@@ -595,6 +612,7 @@ function Header({
   onFindReplace,
   onUndo,
   onExportPdf,
+  onExportDocx,
   onExportMd,
   onAddKb,
   onRemoveKb,
@@ -612,6 +630,7 @@ function Header({
   onFindReplace: () => void;
   onUndo: () => void;
   onExportPdf: () => void;
+  onExportDocx: () => void;
   onExportMd: () => void;
   onAddKb: (files: FileList) => void;
   onRemoveKb: (name: string) => void;
@@ -706,8 +725,11 @@ function Header({
           <details className="relative [&_summary::-webkit-details-marker]:hidden">
             <summary className={`${btn} cursor-pointer list-none`}>Export</summary>
             <div className="absolute right-0 z-20 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 shadow-lg">
+              <button onClick={(e) => { onExportDocx(); closeMenu(e); }} className="block w-full px-3 py-1.5 text-left text-xs text-neutral-700 hover:bg-sky-50">
+                Word (.docx)
+              </button>
               <button onClick={(e) => { onExportPdf(); closeMenu(e); }} className="block w-full px-3 py-1.5 text-left text-xs text-neutral-700 hover:bg-sky-50">
-                PDF (edited proposal)
+                PDF
               </button>
               <button onClick={(e) => { onExportMd(); closeMenu(e); }} className="block w-full px-3 py-1.5 text-left text-xs text-neutral-700 hover:bg-sky-50">
                 Markdown

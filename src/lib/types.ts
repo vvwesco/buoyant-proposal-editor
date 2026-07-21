@@ -15,11 +15,10 @@ export interface Block {
   id: string;
   type: BlockType;
   text: string; // current text (may have been edited)
-  original: string; // text as first parsed — never mutated; used for diffing/eval
+  original: string; // text as first parsed - never mutated; used for diffing/eval
   page: number;
   bbox: BBox;
   fontSize: number;
-  edited: boolean;
 }
 
 export interface ParsedDoc {
