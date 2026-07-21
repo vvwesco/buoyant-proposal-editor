@@ -217,8 +217,8 @@ export interface Plan {
 const PLAN_SYSTEM = `You turn a proposal writer's high-level request into a concrete set of per-paragraph edits across a civil-engineering Statement of Qualifications. You are given the request and a numbered list of the document's paragraphs, each with an id, its section heading, and its text. Decide which paragraphs actually need to change to satisfy the request, and for each write a single specific instruction an editor will apply to THAT paragraph only. Rules:
 - Only include paragraphs that genuinely need changing. Do not touch paragraphs the request does not affect.
 - Each per-paragraph instruction must be self-contained and faithful to the request; keep the change minimal.
-- Never invent facts (names, numbers, licenses, projects).
-- Also write one short sentence summarizing what you are about to change across the document.`;
+- Never invent facts (names, numbers, licenses, projects). If the request would require stating something not supported by the document (for example claiming the firm served a city it has not), do NOT plan that edit.
+- The message MUST match the edits you return. If you return edits, the message summarizes them in one sentence. If you decide nothing should change (nothing in the document matches, or the only way to satisfy the request would be to invent a fact), return an EMPTY edits list and make the message one honest sentence explaining exactly why nothing changed. Never describe in the message an edit you are not actually returning.`;
 
 export async function planEdits(
   instruction: string,
@@ -279,10 +279,19 @@ Call plan_edits with the paragraphs to change and a specific instruction for eac
     | undefined;
   const input = tool?.input as { message?: string; edits?: PlanEdit[] } | undefined;
   const valid = new Set(blocks.map((b) => b.id));
-  const edits = asArray<PlanEdit>(input?.edits)
+  const rawEdits = asArray<PlanEdit>(input?.edits);
+  const edits = rawEdits
     .filter((e) => e.blockId && valid.has(e.blockId) && e.instruction?.trim())
     .map((e) => ({ blockId: e.blockId, instruction: e.instruction.trim() }));
-  return { message: input?.message?.trim() || "Proposed changes:", edits };
+  let message = input?.message?.trim() || "Proposed changes:";
+  // If the model named paragraphs that don't exist in this document, every edit
+  // gets dropped and we'd otherwise show a message promising changes with none
+  // to apply. Say that plainly instead of leaving a contradictory summary.
+  if (rawEdits.length > 0 && edits.length === 0) {
+    message =
+      "I could not match that request to specific paragraphs in this document. Try naming the section or the exact wording to change.";
+  }
+  return { message, edits };
 }
 
 // OCR cleanup: fix spacing/hyphenation artifacts from PDF extraction ("Proj ect"

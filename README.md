@@ -128,17 +128,21 @@ Persistence is a v2 concern (see below), not a demo concern.
 - Embeddings for KB retrieval. The corpus is 5 short proposals; keyword-overlap
   retrieval (src/lib/kb.ts) is enough and spends no tokens. Embeddings would be
   theater at this scale.
-- Multi-paragraph chat. Genuinely harder (cross-paragraph consistency, partial
-  application). One thoughtful per-paragraph loop beats a shaky multi-paragraph one.
+- Painting edited text back onto the original PDF canvas (kept the left pane a faithful
+  reference; see the panes note above).
 - Auth, multi-doc workspace, autosave. Out of scope for a proof of the core loop.
 
 ## Failure modes I worried about
 
 - Fabrication. The single worst outcome: a plausible but invented license number or
-  project. Mitigated by the system prompt, the usedFacts audit trail, and the
-  hallucination check in the eval, but an LLM can still fabricate. Before a paying
-  customer, I would add a verifier pass that flags any new named entity or number not
-  present in the source or KB.
+  project. Mitigated in layers: the system prompt, the usedFacts audit trail, the
+  hallucination check in the eval, and a deterministic verifier pass (src/lib/verify.ts)
+  that flags any new number or multi-word proper name not present in the source or KB
+  before you apply. The document-wide planner is held to the same bar: when a request
+  would require inventing a fact (for example "reference San Francisco" in a Missouri
+  firm's SOQ), it declines and says why in plain language rather than making something up.
+  An LLM can still fabricate; the next step is a second-model verifier over what the rules
+  flag.
 - Structure recovery on complex layouts. Two-column pages are now detected and split
   (see design decisions), but tables, 3+ columns, and full-width banners over columns can
   still mis-split. It degrades, it does not crash: you still get selectable units.
@@ -159,9 +163,28 @@ Persistence is a v2 concern (see below), not a demo concern.
 
 ## How I'd evaluate this, and what it actually scores
 
-If this shipped, the metric I would watch is edit faithfulness: does the AI change
-exactly what was asked and nothing else, without fabricating? I split it three ways and
-ran it against the live endpoint (scripts/eval.mjs) on real easy.pdf paragraphs:
+If you are reviewing this, here is the lens I would use. In a procurement context the
+whole game is trust: an AI edit has to change exactly what was asked, ground anything it
+adds, and never quietly invent a fact. Four things to look at, and where each is handled:
+
+- Faithfulness. Does an edit change only what was asked? The unit of interaction is the
+  paragraph because that is the grain writers actually work in, every change is a
+  word-level diff you accept or discard, and a change-magnitude indicator flags a "small
+  fix" that rewrote the whole paragraph. Measured below.
+- Anti-hallucination. The system prompt forbids invented facts, the model lists the facts
+  it used, and a deterministic verifier (src/lib/verify.ts) flags any new number or
+  proper name not traceable to the source or KB before you apply. The document-wide
+  planner declines rather than fabricate (try "reference San Francisco").
+- Structure recovery. PDFs give glyphs at (x, y), not paragraphs. It is rebuilt
+  deterministically in the browser, including a projection-profile column split so
+  side-by-side bio and resume pages do not interleave. Single-column pages provably take
+  the identical single-pass path (unit tested).
+- Closing the loop. The RFP compliance matrix does not just report gaps; each missing row
+  drafts a grounded, cited fix you can insert, or declines and tells you what to supply.
+
+The metric I would watch in production is that first one, edit faithfulness. I split it
+three ways and ran it against the live endpoint (scripts/eval.mjs) on real easy.pdf
+paragraphs:
 
 | Case | Metric | Result |
 |---|---|---|
@@ -193,11 +216,15 @@ this nightly over a labeled set and alert on the hallucination and stale-name ra
   image-only PDFs, and a change-magnitude indicator to catch over-edits.
 
 Beyond the core loop (the "Review", "Draft", and trust parts of Buoyant's own product):
-- RFP compliance matrix (src/lib/compliance.ts, CompliancePanel): upload the RFP and it
-  extracts the concrete requirements and checks the current draft against each one - met,
-  at risk, or missing, with a reason and a supporting quote, and a "locate" that jumps to
-  the paragraph. This is Buoyant's Review stage. Verified: it correctly reads a Missouri
-  PE license as met and flags a missing non-collusion affidavit and missing references.
+- RFP compliance matrix with one-click fixes (src/lib/compliance.ts, CompliancePanel):
+  upload the RFP and it extracts the concrete requirements and checks the current draft
+  against each one - met, at risk, or missing, with a reason and a supporting quote, and a
+  "locate" that jumps to the paragraph. This is Buoyant's Review stage. The loop is
+  closed: each unmet row has a "Draft a fix" that writes a grounded, cited paragraph you
+  can insert with one click, and when a requirement needs a real form or signature it
+  declines and tells you what to supply instead of faking it. Verified: it correctly
+  reads a Missouri PE license as met and flags a missing non-collusion affidavit and
+  missing references.
 - Document-wide edits (src/lib/anthropic.ts planEdits, ChatPanel): describe a change that
   spans paragraphs ("make the whole Approach section speak to City X"); the AI plans which
   paragraphs to touch (skipping the rest), edits each through the same per-paragraph path
@@ -216,7 +243,16 @@ Stretch goals and product polish delivered:
   highlights and scrolls to the match in the other, and edited paragraphs are tinted on
   the page.
 - Multi-column parsing (the "hard fixture" stretch): column detection so hard.pdf's
-  resume/bio pages parse correctly instead of interleaving the sidebar into the body.
+  resume/bio pages parse correctly instead of interleaving the sidebar into the body,
+  including full-width intro lines sitting above two columns (gutter-based bounds so a
+  banner line does not merge the columns back together).
+- OCR cleanup pass: PDF extraction sometimes splits a word ("Proj ect") or glues two
+  together. A cheap fast-model pass repairs these at parse time, gated so it can only
+  re-space text and can never change a word, number, or name (src/lib/verify.ts
+  respaceWithOriginalChars).
+- Find and jump: Find & replace is not just replace. Type a term and step Prev/Next
+  through every matching paragraph, each scrolled into view and briefly highlighted, with
+  no AI call and no change to the document.
 - Supplementary knowledge base: users can add their own past proposals or resumes as
   session reference files (parsed in the browser, never uploaded) that ground
   "Add from past work" edits, with provenance.
@@ -226,12 +262,12 @@ Stretch goals and product polish delivered:
 
 ## What I'd build next given another 8 hours
 
-(The verifier pass, DOCX export, multi-column parsing, the compliance matrix, and
-document-wide edits described above were the last round; next I'd do:)
+(The verifier pass, DOCX export, multi-column parsing, the compliance matrix with
+one-click drafted fixes, the OCR cleanup pass, and document-wide edits described above
+were the last round; next I'd do:)
 
-1. Strengthen the verifier with a second-model pass over what the rules flag, and close
-   the compliance loop by turning each "missing/at risk" row into a one-click drafted fix
-   (RFP requirement -> generated, grounded, cited paragraph).
+1. Strengthen the verifier with a second-model pass over what the rules flag, so the
+   deterministic check gets a semantic backstop for the entities it cannot key on.
 2. hard.pdf: build on the column detection with table recovery and 3+ column support,
    likely a hybrid where geometry proposes blocks and an LLM cleans section boundaries.
 3. Streaming edits for perceived speed, and retry/backoff on the proxy (one hiccup should

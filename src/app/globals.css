@@ -24,3 +24,19 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Transient highlight when Find-and-jump lands on a matching paragraph. */
+.fr-flash {
+  animation: fr-flash 1.2s ease-out;
+  border-radius: 0.375rem;
+}
+@keyframes fr-flash {
+  0% {
+    background-color: rgba(250, 204, 21, 0.55);
+    box-shadow: 0 0 0 3px rgba(250, 204, 21, 0.55);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: 0 0 0 3px transparent;
+  }
+}

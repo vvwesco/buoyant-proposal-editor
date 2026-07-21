@@ -655,20 +655,46 @@ function FindReplaceBar({
   const [replace, setReplace] = useState("");
   const [ci, setCi] = useState(true);
   const [result, setResult] = useState<string | null>(null);
+  // Index into matchIds for the find-and-jump navigation (-1 = not started).
+  const [cursor, setCursor] = useState(-1);
 
-  const { blocks, occ } = useMemo(() => {
-    if (!find) return { blocks: 0, occ: 0 };
-    let b = 0;
+  const { blocks, occ, matchIds } = useMemo(() => {
+    if (!find) return { blocks: 0, occ: 0, matchIds: [] as string[] };
     let o = 0;
+    const ids: string[] = [];
     for (const blk of doc.blocks) {
       const c = countMatches(blk.text, find, ci);
       if (c) {
-        b++;
+        ids.push(blk.id);
         o += c;
       }
     }
-    return { blocks: b, occ: o };
+    return { blocks: ids.length, occ: o, matchIds: ids };
   }, [find, ci, doc]);
+
+  // Scroll a matching paragraph into view and flash it, without selecting it
+  // (so navigating matches never triggers an AI suggestion fetch). Direct DOM
+  // touch for a transient highlight class - React re-renders won't fight it.
+  const jumpTo = (id: string) => {
+    const el = document.getElementById(`doc-${id}`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    el.classList.add("fr-flash");
+    window.setTimeout(() => el.classList.remove("fr-flash"), 1200);
+  };
+
+  const step = (dir: 1 | -1) => {
+    if (!matchIds.length) return;
+    const i = (cursor + dir + matchIds.length) % matchIds.length;
+    setCursor(i);
+    jumpTo(matchIds[i]);
+  };
+
+  const resetFind = (v: string) => {
+    setFind(v);
+    setResult(null);
+    setCursor(-1);
+  };
 
   const run = () => {
     const n = onReplace(find, replace, ci);
@@ -680,13 +706,42 @@ function FindReplaceBar({
       <input
         autoFocus
         value={find}
-        onChange={(e) => {
-          setFind(e.target.value);
-          setResult(null);
-        }}
+        onChange={(e) => resetFind(e.target.value)}
         placeholder="Find"
         className="w-40 rounded-md border border-neutral-300 px-2 py-1 outline-none focus:border-sky-400"
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && occ > 0) {
+            e.preventDefault();
+            step(e.shiftKey ? -1 : 1);
+          }
+        }}
       />
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => step(-1)}
+          disabled={occ === 0}
+          title="Previous match"
+          className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-200 disabled:opacity-40"
+        >
+          Prev
+        </button>
+        <button
+          onClick={() => step(1)}
+          disabled={occ === 0}
+          title="Next match (Enter)"
+          className="rounded-md border border-neutral-300 px-2 py-1 text-xs text-neutral-600 hover:bg-neutral-200 disabled:opacity-40"
+        >
+          Next
+        </button>
+      </div>
+      <span className="min-w-14 text-xs tabular-nums text-neutral-400">
+        {find
+          ? cursor >= 0
+            ? `${cursor + 1} of ${blocks}`
+            : `${occ} match${occ === 1 ? "" : "es"} in ${blocks} paragraph${blocks === 1 ? "" : "s"}`
+          : "Find, jump, or replace. No AI, instantly undoable."}
+      </span>
+      <span className="mx-1 h-5 w-px bg-neutral-300" />
       <input
         value={replace}
         onChange={(e) => setReplace(e.target.value)}
@@ -698,16 +753,14 @@ function FindReplaceBar({
         <input
           type="checkbox"
           checked={ci}
-          onChange={(e) => setCi(e.target.checked)}
+          onChange={(e) => {
+            setCi(e.target.checked);
+            setCursor(-1);
+          }}
           className="accent-sky-600"
         />
         Ignore case
       </label>
-      <span className="text-xs text-neutral-400">
-        {find
-          ? `${occ} match${occ === 1 ? "" : "es"} in ${blocks} paragraph${blocks === 1 ? "" : "s"}`
-          : "Deterministic, no AI, instantly undoable"}
-      </span>
       <button
         onClick={run}
         disabled={!find || occ === 0}

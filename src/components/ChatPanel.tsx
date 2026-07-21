@@ -175,7 +175,9 @@ export default function ChatPanel({
         {error && (
           <div className="rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-700">{error}</div>
         )}
-        {planMsg && <p className="mb-2 text-xs italic text-neutral-500">{planMsg}</p>}
+        {planMsg && edits.length > 0 && (
+          <p className="mb-2 text-xs italic text-neutral-500">{planMsg}</p>
+        )}
         {busy && !edits.length && (
           <div className="flex flex-col gap-2">
             {[0, 1, 2].map((i) => (
@@ -184,7 +186,9 @@ export default function ChatPanel({
           </div>
         )}
         {!busy && planMsg && edits.length === 0 && !error && (
-          <p className="text-sm text-neutral-400">No paragraphs needed changing for that request.</p>
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-2 text-sm leading-snug text-amber-800">
+            {planMsg}
+          </div>
         )}
 
         <ul className="flex flex-col gap-2">
