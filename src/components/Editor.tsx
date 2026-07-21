@@ -10,6 +10,16 @@ import EditPanel, { type Proposal } from "./EditPanel";
 type Change = { blockId: string; before: string; after: string };
 type Op = { id: string; label: string; changes: Change[] };
 
+// Content hash so re-uploading the exact same bytes reuses the cached parse,
+// while a different file that happens to share a name/size does not collide.
+async function hashBuf(buf: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", buf);
+  return [...new Uint8Array(digest)]
+    .slice(0, 8)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 export default function Editor() {
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
   const [fileBuf, setFileBuf] = useState<ArrayBuffer | null>(null);
@@ -37,7 +47,7 @@ export default function Editor() {
     setProposal(null);
     setSelectedId(null);
     setHistory([]);
-    const key = `${name}:${buf.byteLength}`;
+    const key = `${name}:${await hashBuf(buf)}`;
     const hit = cache.current.get(key);
     if (hit) {
       setFileBuf(hit.buf);

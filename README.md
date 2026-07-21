@@ -80,9 +80,14 @@ rules that matter for procurement documents:
 
 ### UX: review before apply, compose, undo
 The AI never edits silently. It returns a word-level diff (green add, red strike); the
-user applies or discards. Applied edits compose (edit many paragraphs; each keeps a
-mark), and Undo pops the last applied change. Presets cover the common asks, with a
-free-form instruction box for anything else.
+user applies (Enter) or discards (Escape). Each proposal shows how much of the
+paragraph it changed, flagged when a "small fix" rewrote most of it. Applied edits
+compose (edit many paragraphs; each keeps a mark), and Undo reverts the last operation.
+
+For the most common recycle task, changing a client name across the whole document,
+there is a deterministic Find & replace: it shows a live match count and applies as one
+undoable operation with no AI call. A literal string swap should be instant and can
+never be a fabrication surface, so it does not belong in the LLM path.
 
 ### No database
 State is per-session in the client; parse results are cached in-memory by file hash.
@@ -116,8 +121,14 @@ Persistence is a v2 concern (see below), not a demo concern.
   column. On hard.pdf (multi-column, tables, embedded branding) it will mis-merge or
   mis-split blocks. It degrades, it does not crash: you still get selectable units.
 - Silent no-op or over-edit. The model could change nothing, or rewrite the whole
-  paragraph when asked for a small fix. The diff surfaces this to the user, and the
-  eval's scope metric quantifies it (95-98 percent retained on name changes).
+  paragraph when asked for a small fix. The diff plus a change-magnitude indicator
+  surface this to the user, and the eval's scope metric quantifies it (95-98 percent
+  retained on name changes).
+- Truncation and empty edits. A long (e.g. mis-merged multi-column) block can exceed
+  the output budget; the server now detects stop_reason=max_tokens and rejects empty
+  edits instead of applying a cut-off paragraph.
+- Wrong-paragraph edits. If the user switches blocks while a request is in flight, a
+  request-id guard drops the stale response so a diff never lands on the wrong block.
 - Proxy or model errors and spend. /api/edit returns a clean error to the UI on 4xx
   and 5xx; the 100 dollar cap is a hard ceiling. No retry/backoff yet; I would add it
   before production.
@@ -152,6 +163,12 @@ this nightly over a labeled set and alert on the hallucination and stale-name ra
 - The eval harness with a hallucination check: the failure mode that actually matters
   here, made measurable.
 - Provenance surfacing (usedFacts shown in the UI) so a user can trust an addition.
+- Deterministic Find & replace for the client-name swap, the single most common recycle
+  edit: instant, no tokens, and undone in one step. Keeping it out of the LLM path is
+  the point, not an afterthought.
+- Guardrails that back the failure-modes section rather than just listing it: truncation
+  detection, empty-edit rejection, a stale-response guard, an empty-state for
+  image-only PDFs, and a change-magnitude indicator to catch over-edits.
 
 ## What I'd build next given another 8 hours
 
