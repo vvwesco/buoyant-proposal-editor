@@ -35,7 +35,18 @@ export function respaceWithOriginalChars(original: string, cleaned: string): str
   return out;
 }
 
-const CONNECTORS = new Set(["of", "and", "the", "for", "de", "on", "at", "&"]);
+// Connectors that can sit inside a single proper name ("City of Rolla",
+// "Board of Public Works"). Deliberately excludes "and" so a list like
+// "X and Y" splits into two names instead of one greedy blob.
+const CONNECTORS = new Set(["of", "the", "&"]);
+
+// Capitalized words that are usually sentence starters, not part of a name. They
+// break a proper-name run so we don't glue "Carlinville Our Firm" into one phrase.
+const STOP_CAPS = new Set(
+  "The Our We I A An This That These Those It Its His Her Their As At To By For With In On And But Or However Additionally Furthermore".split(
+    " ",
+  ),
+);
 
 // Pull runs of Capitalized words (allowing lowercase connectors mid-phrase) as
 // candidate proper names, keeping only multi-word phrases to avoid flagging
@@ -48,7 +59,7 @@ function properPhrases(text: string): string[] {
   let cur: string[] = [];
   for (const raw of words) {
     const w = clean(raw);
-    if (isCap(w)) cur.push(w);
+    if (isCap(w) && !STOP_CAPS.has(w)) cur.push(w);
     else if (cur.length && CONNECTORS.has(w.toLowerCase())) cur.push(w.toLowerCase());
     else {
       if (cur.length) phrases.push(cur.join(" "));
@@ -57,8 +68,11 @@ function properPhrases(text: string): string[] {
   }
   if (cur.length) phrases.push(cur.join(" "));
   return phrases
-    .map((p) => p.replace(/\s+(?:of|and|the|for|&)$/i, "").trim())
-    .filter((p) => p.split(/\s+/).length >= 2);
+    .map((p) => p.replace(/\s+(?:of|the|&)$/i, "").trim())
+    .filter((p) => {
+      const n = p.split(/\s+/).length;
+      return n >= 2 && n <= 6; // 2-6 words: a name, not a whole clause
+    });
 }
 
 // Normalize away punctuation/whitespace so "Company, Inc." matches "Company Inc".

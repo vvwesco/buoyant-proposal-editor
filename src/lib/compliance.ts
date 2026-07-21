@@ -241,3 +241,75 @@ export async function checkCompliance(
   }
   return results;
 }
+
+// Draft a single paragraph that satisfies one requirement, grounded only in the
+// firm's knowledge base and existing proposal - closing the compliance loop from
+// "missing" to a reviewable, insertable fix. Returns an empty draft with a note
+// when the requirement needs a real form/signature/data that can't be written.
+export interface DraftFix {
+  text: string; // the drafted paragraph, or "" if it can't be drafted
+  usedFacts: string[]; // KB facts the draft relied on
+  note: string; // why it's empty, or a short note about the draft
+}
+
+const DRAFT_SYSTEM = `You draft ONE paragraph for a civil-engineering Statement of Qualifications that satisfies a specific RFP requirement, written in the firm's confident, client-centric voice. Ground it ONLY in the provided knowledge-base excerpts and the firm's existing proposal text. Rules:
+- Never invent facts: no fabricated names, PE license numbers, dollar amounts, dates, project names, statistics, or references. Use only facts present in the provided material.
+- If the requirement asks for a form, signed affidavit, certificate, insurance document, or specific data (such as a list of client references) that cannot be written from the provided material, return an EMPTY draft ("") and a one-sentence note telling the user what they must supply.
+- Otherwise return one tight paragraph and list the specific KB facts you used.`;
+
+export async function draftFix(
+  requirement: string,
+  category: string,
+  proposalText: string,
+  kbSnippets: { project: string; text: string }[],
+): Promise<DraftFix> {
+  const kb = kbSnippets.length
+    ? kbSnippets.map((s, i) => `[${i + 1}] (${s.project}) ${s.text}`).join("\n")
+    : "(no knowledge-base excerpts retrieved)";
+  const resp = await client.messages.create({
+    model: DEFAULT_MODEL,
+    max_tokens: 1200,
+    system: DRAFT_SYSTEM,
+    tools: [
+      {
+        name: "draft_fix",
+        description: "Return the drafted paragraph (or empty) plus facts used and a note.",
+        input_schema: {
+          type: "object",
+          properties: {
+            text: { type: "string", description: "The paragraph, or empty string if it cannot be drafted." },
+            usedFacts: { type: "array", items: { type: "string" } },
+            note: { type: "string", description: "One sentence: what to supply, or a note about the draft." },
+          },
+          required: ["text", "note"],
+        },
+      },
+    ],
+    tool_choice: { type: "tool", name: "draft_fix" },
+    messages: [
+      {
+        role: "user",
+        content: `Requirement (${category}): ${requirement}
+
+Existing proposal (for voice and facts):
+"""
+${(proposalText ?? "").slice(0, 8000)}
+"""
+
+Knowledge base excerpts:
+${kb}
+
+Call draft_fix.`,
+      },
+    ],
+  });
+  const tool = resp.content.find((b) => b.type === "tool_use") as
+    | Anthropic.ToolUseBlock
+    | undefined;
+  const input = tool?.input as { text?: string; usedFacts?: string[]; note?: string } | undefined;
+  return {
+    text: (input?.text ?? "").trim(),
+    usedFacts: input?.usedFacts ?? [],
+    note: (input?.note ?? "").trim(),
+  };
+}

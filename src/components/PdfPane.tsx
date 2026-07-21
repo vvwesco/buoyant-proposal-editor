@@ -101,7 +101,7 @@ export default function PdfPane({
             className="block"
           />
           {doc.blocks
-            .filter((b) => b.page === ps.page)
+            .filter((b) => b.page === ps.page && b.bbox.w > 0 && b.bbox.h > 0)
             .map((b) => {
               const sel = b.id === selectedId;
               const edited = editedIds.has(b.id);

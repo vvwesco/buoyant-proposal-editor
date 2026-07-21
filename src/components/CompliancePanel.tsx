@@ -73,12 +73,25 @@ const STATUS_STYLE: Record<Row["status"], { chip: string; label: string }> = {
   missing: { chip: "bg-red-100 text-red-700 border border-red-200", label: "Missing" },
 };
 
+interface Draft {
+  text: string;
+  usedFacts: string[];
+  note: string;
+  warnings: { kind: string; value: string }[];
+  loading?: boolean;
+  error?: string;
+}
+
 export default function CompliancePanel({
   doc,
+  sessionKb,
   onSelectBlock,
+  onInsertParagraph,
 }: {
   doc: ParsedDoc | null;
+  sessionKb: { name: string; text: string }[];
   onSelectBlock: (blockId: string) => void;
+  onInsertParagraph: (text: string) => void;
 }) {
   const [rfp, setRfp] = useState<{ name: string; text: string } | null>(null);
   const [parsing, setParsing] = useState(false);
@@ -86,6 +99,49 @@ export default function CompliancePanel({
   const [rows, setRows] = useState<Row[] | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+
+  const draftFixFor = async (r: Row) => {
+    if (!doc) return;
+    setDrafts((d) => ({ ...d, [r.id]: { text: "", usedFacts: [], note: "", warnings: [], loading: true } }));
+    try {
+      const res = await fetch("/api/draft-fix", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          requirement: r.text,
+          category: r.category,
+          proposalText: buildProposalText(doc),
+          sessionKb,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Draft failed.");
+      setDrafts((d) => ({
+        ...d,
+        [r.id]: {
+          text: data.text ?? "",
+          usedFacts: data.usedFacts ?? [],
+          note: data.note ?? "",
+          warnings: data.warnings ?? [],
+        },
+      }));
+    } catch (e) {
+      setDrafts((d) => ({
+        ...d,
+        [r.id]: { text: "", usedFacts: [], note: "", warnings: [], error: e instanceof Error ? e.message : "Draft failed." },
+      }));
+    }
+  };
+
+  const insertDraft = (id: string, text: string) => {
+    onInsertParagraph(text);
+    setDrafts((d) => {
+      const next = { ...d };
+      delete next[id];
+      return next;
+    });
+  };
 
   const isPdf = (f: File) =>
     f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf");
@@ -99,6 +155,7 @@ export default function CompliancePanel({
     setError(null);
     setRows(null);
     setSummary(null);
+    setDrafts({});
     try {
       const res = await fetch("/api/compliance", {
         method: "POST",
@@ -138,6 +195,7 @@ export default function CompliancePanel({
     setRows(null);
     setSummary(null);
     setError(null);
+    setDrafts({});
   };
 
   const onLocate = (evidence: string) => {
@@ -289,6 +347,30 @@ export default function CompliancePanel({
                           </button>
                         </div>
                       )}
+
+                      {r.status !== "met" && !drafts[r.id] && (
+                        <button
+                          onClick={() => draftFixFor(r)}
+                          className="mt-2 rounded-md border border-sky-200 bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-700 hover:bg-sky-100"
+                        >
+                          Draft a fix
+                        </button>
+                      )}
+
+                      {drafts[r.id] && (
+                        <DraftCard
+                          draft={drafts[r.id]}
+                          onInsert={() => insertDraft(r.id, drafts[r.id].text)}
+                          onRetry={() => draftFixFor(r)}
+                          onDismiss={() =>
+                            setDrafts((d) => {
+                              const next = { ...d };
+                              delete next[r.id];
+                              return next;
+                            })
+                          }
+                        />
+                      )}
                     </div>
                   </div>
                 </li>
@@ -296,6 +378,73 @@ export default function CompliancePanel({
             })}
           </ul>
         )}
+      </div>
+    </div>
+  );
+}
+
+function DraftCard({
+  draft,
+  onInsert,
+  onRetry,
+  onDismiss,
+}: {
+  draft: Draft;
+  onInsert: () => void;
+  onRetry: () => void;
+  onDismiss: () => void;
+}) {
+  if (draft.loading) return <div className="mt-2 h-14 animate-pulse rounded-md bg-neutral-100" />;
+  if (draft.error) {
+    return (
+      <div className="mt-2 rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+        {draft.error}{" "}
+        <button onClick={onRetry} className="underline">
+          retry
+        </button>
+      </div>
+    );
+  }
+  if (!draft.text) {
+    return (
+      <div className="mt-2 rounded-md border border-neutral-200 bg-neutral-50 p-2 text-xs text-neutral-600">
+        {draft.note || "This requirement needs a form or data you must supply; it can't be drafted."}{" "}
+        <button onClick={onDismiss} className="text-neutral-400 underline">
+          dismiss
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-2 rounded-md border border-sky-200 bg-sky-50/60 p-2">
+      <p className="text-xs leading-relaxed text-neutral-800">{draft.text}</p>
+      {draft.usedFacts.length > 0 && (
+        <p className="mt-1 text-[10px] text-emerald-700">Grounded in: {draft.usedFacts.join("; ")}</p>
+      )}
+      {draft.warnings.length > 0 && (
+        <p className="mt-1 text-[10px] font-medium text-red-700">
+          Verify (not found in KB): {draft.warnings.map((w) => w.value).join(", ")}
+        </p>
+      )}
+      <div className="mt-1.5 flex flex-wrap gap-1.5">
+        <button
+          onClick={onInsert}
+          className="rounded-md bg-emerald-600 px-2 py-0.5 text-[11px] font-semibold text-white hover:bg-emerald-700"
+        >
+          Insert into document
+        </button>
+        <button
+          onClick={onRetry}
+          className="rounded-md border border-neutral-200 px-2 py-0.5 text-[11px] text-neutral-600 hover:bg-neutral-50"
+        >
+          Redo
+        </button>
+        <button
+          onClick={onDismiss}
+          className="rounded-md px-2 py-0.5 text-[11px] text-neutral-500 hover:bg-neutral-100"
+        >
+          Dismiss
+        </button>
       </div>
     </div>
   );

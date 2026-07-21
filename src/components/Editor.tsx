@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ParsedDoc, Suggestion } from "@/lib/types";
+import type { ParsedDoc, Block, Suggestion } from "@/lib/types";
 import { parsePdf } from "@/lib/pdf";
 import { literalReplaceAll, countMatches } from "@/lib/replace";
 import { respaceWithOriginalChars } from "@/lib/verify";
@@ -10,9 +10,10 @@ import EditPanel, { type Proposal } from "./EditPanel";
 import CompliancePanel from "./CompliancePanel";
 import ChatPanel from "./ChatPanel";
 
-// An undoable operation. An AI edit touches one block; find-replace touches many.
+// An undoable operation. An AI edit touches one block; find-replace touches many;
+// a compliance draft inserts a new block (tracked in `inserted` so undo removes it).
 type Change = { blockId: string; before: string; after: string };
-type Op = { id: string; label: string; changes: Change[] };
+type Op = { id: string; label: string; changes: Change[]; inserted?: string[] };
 
 const EMPTY_SET: Set<string> = new Set();
 
@@ -272,19 +273,43 @@ export default function Editor() {
     setProposal(null);
   };
 
+  // Add a brand-new paragraph (e.g. a drafted compliance fix) at the end of the
+  // document, as one undoable operation. Inserted blocks have an empty `original`
+  // so they read as new/edited, and carry a zero bbox (no PDF location).
+  const insertParagraph = (text: string) => {
+    if (!doc || !text.trim()) return;
+    const page = doc.numPages || 1;
+    const block: Block = {
+      id: `ins_${opSeq.current}`,
+      type: "paragraph",
+      text: text.trim(),
+      original: "",
+      page,
+      bbox: { page, x: 0, y: 0, w: 0, h: 0 },
+      fontSize: 12,
+    };
+    setDoc({ ...doc, blocks: [...doc.blocks, block] });
+    setHistory((h) => [
+      ...h,
+      { id: `op_${opSeq.current++}`, label: "insert paragraph", changes: [], inserted: [block.id] },
+    ]);
+    setSelectedId(block.id);
+  };
+
   const undo = () => {
     if (!history.length || !doc) return;
     const last = history[history.length - 1];
     const before = new Map(last.changes.map((c) => [c.blockId, c.before]));
+    const removed = new Set(last.inserted ?? []);
     setDoc({
       ...doc,
-      blocks: doc.blocks.map((b) =>
-        before.has(b.id) ? { ...b, text: before.get(b.id)! } : b,
-      ),
+      blocks: doc.blocks
+        .filter((b) => !removed.has(b.id))
+        .map((b) => (before.has(b.id) ? { ...b, text: before.get(b.id)! } : b)),
     });
     setHistory((h) => h.slice(0, -1));
     setProposal(null);
-    if (last.changes.length === 1) setSelectedId(last.changes[0].blockId);
+    if (last.changes.length === 1 && !last.inserted) setSelectedId(last.changes[0].blockId);
   };
 
   // Deterministic global find-replace. The most common real task (fixing a
@@ -319,7 +344,11 @@ export default function Editor() {
   const revertAll = () => {
     if (!doc || !history.length) return;
     if (!window.confirm("Revert all edits back to the original text?")) return;
-    setDoc({ ...doc, blocks: doc.blocks.map((b) => ({ ...b, text: b.original })) });
+    setDoc({
+      ...doc,
+      // Drop inserted paragraphs (empty original), revert the rest to original text.
+      blocks: doc.blocks.filter((b) => b.original !== "").map((b) => ({ ...b, text: b.original })),
+    });
     setHistory([]);
     setProposal(null);
   };
@@ -504,7 +533,12 @@ export default function Editor() {
                 onSelectBlock={select}
               />
             ) : showCompliance ? (
-              <CompliancePanel doc={doc} onSelectBlock={select} />
+              <CompliancePanel
+                doc={doc}
+                sessionKb={sessionKb}
+                onSelectBlock={select}
+                onInsertParagraph={insertParagraph}
+              />
             ) : (
               <EditPanel
                 block={selectedBlock}
