@@ -192,10 +192,25 @@ this nightly over a labeled set and alert on the hallucination and stale-name ra
   detection, empty-edit rejection, a stale-response guard, an empty-state for
   image-only PDFs, and a change-magnitude indicator to catch over-edits.
 
+Beyond the core loop (the "Review", "Draft", and trust parts of Buoyant's own product):
+- RFP compliance matrix (src/lib/compliance.ts, CompliancePanel): upload the RFP and it
+  extracts the concrete requirements and checks the current draft against each one - met,
+  at risk, or missing, with a reason and a supporting quote, and a "locate" that jumps to
+  the paragraph. This is Buoyant's Review stage. Verified: it correctly reads a Missouri
+  PE license as met and flags a missing non-collusion affidavit and missing references.
+- Document-wide edits (src/lib/anthropic.ts planEdits, ChatPanel): describe a change that
+  spans paragraphs ("make the whole Approach section speak to City X"); the AI plans which
+  paragraphs to touch (skipping the rest), edits each through the same per-paragraph path
+  (so each gets its own diff and verifier check), and you review the batch and apply it as
+  one undoable operation.
+- Verifier pass (src/lib/verify.ts): before you apply an edit, it flags any new number or
+  multi-word proper name not traceable to the source paragraph or the KB. Deterministic,
+  no extra latency; the anti-hallucination guardrail made real.
+
 Stretch goals and product polish delivered:
-- Export to PDF (also a brief requirement): a clean, paginated PDF via jsPDF (title, bold
-  section headings, wrapped body, page numbers), named "<original> - edited.pdf". Markdown
-  export too.
+- Export to Word (.docx) - the surface AEC writers round-trip through - plus a clean
+  paginated PDF (jsPDF: title, bold headings, wrapped body, page numbers) and Markdown, all
+  named "<original> - edited".
 - Linked, interactive reference pane: instead of a read-only viewer, the PDF is rendered
   with a hit-box over every recovered paragraph, so clicking a paragraph in either pane
   highlights and scrolls to the match in the other, and edited paragraphs are tinted on
@@ -211,12 +226,16 @@ Stretch goals and product polish delivered:
 
 ## What I'd build next given another 8 hours
 
-1. Verifier pass: a second model call (or rules) that flags any new entity or number
-   not traceable to the source or KB, turning "trust me" into "here is what is
-   unverified."
+(The verifier pass, DOCX export, multi-column parsing, the compliance matrix, and
+document-wide edits described above were the last round; next I'd do:)
+
+1. Strengthen the verifier with a second-model pass over what the rules flag, and close
+   the compliance loop by turning each "missing/at risk" row into a one-click drafted fix
+   (RFP requirement -> generated, grounded, cited paragraph).
 2. hard.pdf: build on the column detection with table recovery and 3+ column support,
    likely a hybrid where geometry proposes blocks and an LLM cleans section boundaries.
-3. Streaming edits for perceived speed, and retry/backoff on the proxy.
-4. Multi-paragraph chat with a plan, per-paragraph diff, then batch-apply flow.
-5. Export to DOCX (the surface Buoyant users actually live in) with styles preserved.
-6. Persistence: save a document and its edit history so work survives a refresh.
+3. Streaming edits for perceived speed, and retry/backoff on the proxy (one hiccup should
+   not surface as a hard error).
+4. Real DOCX round-trip: write edits back into the uploaded document by block identity so
+   the firm's branding and layout survive, not just a fresh styled export.
+5. Persistence: save a document and its edit history so work survives a refresh.
