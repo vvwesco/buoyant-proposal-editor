@@ -180,5 +180,10 @@ function median(xs: number[]): number {
 const medianFont = (items: RawItem[]) => median(items.map((i) => i.fontSize));
 const medianLineFont = (lns: { fontSize: number }[]) => median(lns.map((l) => l.fontSize));
 
-// Note: we intentionally don't rasterize pages ourselves — the reference pane
-// uses the browser's native PDF viewer (see PdfPane). pdfjs here is parse-only.
+// Load the document once for rendering. Callers hold the proxy and render pages
+// sequentially from it (see PdfPane). getDocument detaches the passed buffer, so
+// hand it a copy and keep the master intact.
+export async function loadDocument(data: ArrayBuffer) {
+  const pdfjs = await getPdfjs();
+  return pdfjs.getDocument({ data: data.slice(0) }).promise;
+}

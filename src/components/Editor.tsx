@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ParsedDoc } from "@/lib/types";
 import { parsePdf } from "@/lib/pdf";
 import PdfPane from "./PdfPane";
@@ -241,6 +241,15 @@ export default function Editor() {
     pdf.save(title + ".edited.pdf");
   };
 
+  // Shared selection used by both panes so clicking in one highlights the other.
+  const select = (id: string) => {
+    reqRef.current++; // invalidate any in-flight edit for the previously selected block
+    setSelectedId(id);
+    setProposal(null);
+    setError(null);
+    setLoading(false);
+  };
+
   return (
     <div className="flex h-screen flex-col bg-neutral-50 text-neutral-900">
       <Header
@@ -273,18 +282,18 @@ export default function Editor() {
 
       {doc && fileBuf && (
         <div className="grid flex-1 grid-cols-[1fr_1.05fr_380px] overflow-hidden divide-x divide-neutral-200">
-          <PdfPane fileBuf={fileBuf} />
+          <PdfPane
+            fileBuf={fileBuf}
+            doc={doc}
+            selectedId={selectedId}
+            editedIds={editedIds}
+            onSelect={select}
+          />
           <DocPane
             doc={doc}
             selectedId={selectedId}
             editedIds={editedIds}
-            onSelect={(id) => {
-              reqRef.current++; // invalidate any in-flight edit for the old block
-              setSelectedId(id);
-              setProposal(null);
-              setError(null);
-              setLoading(false);
-            }}
+            onSelect={select}
           />
           <div className="bg-white">
             <EditPanel
@@ -403,6 +412,15 @@ function DocPane({
   editedIds: Set<string>;
   onSelect: (id: string) => void;
 }) {
+  // Scroll to the selected block when the selection comes from the PDF pane.
+  // "nearest" means a click inside this pane won't cause a jump.
+  useEffect(() => {
+    if (!selectedId) return;
+    document
+      .getElementById(`doc-${selectedId}`)
+      ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [selectedId]);
+
   return (
     <div className="h-full overflow-auto bg-white px-8 py-6">
       <div className="mx-auto max-w-2xl">
