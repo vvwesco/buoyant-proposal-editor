@@ -1,5 +1,6 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
+import { asArray } from "./anthropic";
 
 // Server-only Anthropic client for the RFP compliance matrix. Same Buoyant proxy
 // wiring as anthropic.ts - the token never reaches the browser; all compliance
@@ -119,7 +120,9 @@ Call extract_requirements with the concrete, checkable requirements.`,
   const tool = resp.content.find((b) => b.type === "tool_use") as
     | Anthropic.ToolUseBlock
     | undefined;
-  const raw = (tool?.input as { requirements?: Omit<Requirement, "id">[] })?.requirements ?? [];
+  const raw = asArray<Omit<Requirement, "id">>(
+    (tool?.input as { requirements?: Omit<Requirement, "id">[] })?.requirements,
+  );
 
   // Assign our own stable ids (r1, r2, ...) so the merge in checkCompliance is
   // guaranteed unique regardless of what the model returned.
@@ -202,7 +205,7 @@ Call report_compliance with exactly one assessment for each requirement id above
   const tool = resp.content.find((b) => b.type === "tool_use") as
     | Anthropic.ToolUseBlock
     | undefined;
-  const raw = (tool?.input as { assessments?: Assessment[] })?.assessments ?? [];
+  const raw = asArray<Assessment>((tool?.input as { assessments?: Assessment[] })?.assessments);
   const byId = new Map<string, Assessment>();
   for (const a of raw) {
     if (!a?.id) continue;
@@ -309,7 +312,7 @@ Call draft_fix.`,
   const input = tool?.input as { text?: string; usedFacts?: string[]; note?: string } | undefined;
   return {
     text: (input?.text ?? "").trim(),
-    usedFacts: input?.usedFacts ?? [],
+    usedFacts: asArray<string>(input?.usedFacts),
     note: (input?.note ?? "").trim(),
   };
 }

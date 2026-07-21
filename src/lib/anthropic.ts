@@ -14,6 +14,13 @@ const client = new Anthropic({
 // Opus is overkill for single-paragraph edits.
 export const DEFAULT_MODEL = process.env.EDIT_MODEL ?? "claude-sonnet-5";
 
+// A structured tool field typed as an array can occasionally come back from the
+// model as null, an object, or a single item. Coerce to an array before calling
+// array methods, so a stray shape never throws ".filter is not a function".
+export function asArray<T>(x: unknown): T[] {
+  return Array.isArray(x) ? (x as T[]) : [];
+}
+
 export interface EditContext {
   action: string; // preset id or "custom"
   instruction: string; // human instruction
@@ -124,7 +131,7 @@ Call propose_edit with the revised paragraph.`;
   return {
     newText,
     rationale: input.rationale ?? "",
-    usedFacts: input.usedFacts ?? [],
+    usedFacts: asArray<string>(input.usedFacts),
   };
 }
 
@@ -187,7 +194,7 @@ Suggest 2-3 tailored edit actions.`,
   const tool = resp.content.find((b) => b.type === "tool_use") as
     | Anthropic.ToolUseBlock
     | undefined;
-  const raw = (tool?.input as { suggestions?: Suggestion[] })?.suggestions ?? [];
+  const raw = asArray<Suggestion>((tool?.input as { suggestions?: Suggestion[] })?.suggestions);
   return raw
     .filter((s) => s.label?.trim() && s.instruction?.trim())
     .slice(0, 3)
@@ -272,7 +279,7 @@ Call plan_edits with the paragraphs to change and a specific instruction for eac
     | undefined;
   const input = tool?.input as { message?: string; edits?: PlanEdit[] } | undefined;
   const valid = new Set(blocks.map((b) => b.id));
-  const edits = (input?.edits ?? [])
+  const edits = asArray<PlanEdit>(input?.edits)
     .filter((e) => e.blockId && valid.has(e.blockId) && e.instruction?.trim())
     .map((e) => ({ blockId: e.blockId, instruction: e.instruction.trim() }));
   return { message: input?.message?.trim() || "Proposed changes:", edits };
@@ -333,7 +340,9 @@ async function cleanupBatch(
   const tool = resp.content.find((b) => b.type === "tool_use") as
     | Anthropic.ToolUseBlock
     | undefined;
-  return (tool?.input as { items?: { id: string; text: string }[] })?.items ?? [];
+  return asArray<{ id: string; text: string }>(
+    (tool?.input as { items?: { id: string; text: string }[] })?.items,
+  );
 }
 
 export async function cleanupBlocks(
