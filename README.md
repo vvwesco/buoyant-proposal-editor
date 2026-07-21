@@ -25,6 +25,12 @@ Click "easy.pdf" on the landing screen (or drop in your own PDF), select a
 paragraph in the middle pane, and edit it. The original renders in the left pane.
 The token is server-side only (edits go through /api/edit).
 
+Run the unit tests (pure parser + diff + retrieval logic, no server needed):
+
+```bash
+npm test
+```
+
 Run the eval against a running server:
 
 ```bash
@@ -51,6 +57,15 @@ the app feel broken. I spend the LLM budget on the edit, where it adds value, an
 parse for free in about a second. (2) The edit loop does not need a perfect parse; it
 needs stable, selectable units. Geometry gives that on the single-column easy.pdf
 cleanly.
+
+Multi-column pages: sorting purely top-to-bottom interleaves side-by-side columns, so
+on the resume/bio pages of hard.pdf a sidebar heading like "AREA OF EXPERTISE/DESIGN"
+absorbed body text from the other column. Before line clustering, a column-detection
+pass (a projection-profile / XY-cut: find the wide, near-empty vertical gutter that
+spans the page height) splits the page into columns, parses each independently, and
+orders them left-to-right. If fewer than two columns are found the page takes the
+identical single-pass path, so single-column pages are provably unchanged (covered by
+unit tests).
 
 ### Two panes: fidelity on the left, editing in the middle
 - Left: the original PDF shown via the browser's native viewer (an iframe over a
@@ -117,9 +132,9 @@ Persistence is a v2 concern (see below), not a demo concern.
   hallucination check in the eval, but an LLM can still fabricate. Before a paying
   customer, I would add a verifier pass that flags any new named entity or number not
   present in the source or KB.
-- Structure recovery on complex layouts. The geometry parser is tuned for single
-  column. On hard.pdf (multi-column, tables, embedded branding) it will mis-merge or
-  mis-split blocks. It degrades, it does not crash: you still get selectable units.
+- Structure recovery on complex layouts. Two-column pages are now detected and split
+  (see design decisions), but tables, 3+ columns, and full-width banners over columns can
+  still mis-split. It degrades, it does not crash: you still get selectable units.
 - Silent no-op or over-edit. The model could change nothing, or rewrite the whole
   paragraph when asked for a small fix. The diff plus a change-magnitude indicator
   surface this to the user, and the eval's scope metric quantifies it (95-98 percent
@@ -170,13 +185,30 @@ this nightly over a labeled set and alert on the hallucination and stale-name ra
   detection, empty-edit rejection, a stale-response guard, an empty-state for
   image-only PDFs, and a change-magnitude indicator to catch over-edits.
 
+Stretch goals and product polish delivered:
+- Export to PDF (also a brief requirement): a clean, paginated PDF via jsPDF (title, bold
+  section headings, wrapped body, page numbers), named "<original> - edited.pdf". Markdown
+  export too.
+- Linked, interactive reference pane: instead of a read-only viewer, the PDF is rendered
+  with a hit-box over every recovered paragraph, so clicking a paragraph in either pane
+  highlights and scrolls to the match in the other, and edited paragraphs are tinted on
+  the page.
+- Multi-column parsing (the "hard fixture" stretch): column detection so hard.pdf's
+  resume/bio pages parse correctly instead of interleaving the sidebar into the body.
+- Supplementary knowledge base: users can add their own past proposals or resumes as
+  session reference files (parsed in the browser, never uploaded) that ground
+  "Add from past work" edits, with provenance.
+- Editing niceties a real user expects: a track-changes toggle with a revision bar and a
+  revert-all, home navigation, keyboard apply/discard, and actions that never scroll
+  off-screen.
+
 ## What I'd build next given another 8 hours
 
 1. Verifier pass: a second model call (or rules) that flags any new entity or number
    not traceable to the source or KB, turning "trust me" into "here is what is
    unverified."
-2. hard.pdf: smarter structure recovery (column detection, table handling), likely a
-   hybrid where geometry proposes blocks and an LLM cleans section boundaries.
+2. hard.pdf: build on the column detection with table recovery and 3+ column support,
+   likely a hybrid where geometry proposes blocks and an LLM cleans section boundaries.
 3. Streaming edits for perceived speed, and retry/backoff on the proxy.
 4. Multi-paragraph chat with a plan, per-paragraph diff, then batch-apply flow.
 5. Export to DOCX (the surface Buoyant users actually live in) with styles preserved.
