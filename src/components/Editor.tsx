@@ -189,6 +189,58 @@ export default function Editor() {
     URL.revokeObjectURL(a.href);
   };
 
+  // Export the edited document as a clean, readable PDF. Not a pixel copy of the
+  // original (the brief says that isn't the point) but a real, paginated PDF a
+  // client could hand off: title, bold section headings, wrapped body, footer.
+  const exportPdf = async () => {
+    if (!doc) return;
+    const { jsPDF } = await import("jspdf");
+    const pdf = new jsPDF({ unit: "pt", format: "letter" });
+    const margin = 64;
+    const pageW = pdf.internal.pageSize.getWidth();
+    const pageH = pdf.internal.pageSize.getHeight();
+    const maxW = pageW - margin * 2;
+    let y = margin;
+    const ensure = (h: number) => {
+      if (y + h > pageH - margin) {
+        pdf.addPage();
+        y = margin;
+      }
+    };
+    const title = doc.fileName.replace(/\.pdf$/i, "");
+    pdf.setFont("times", "bold").setFontSize(18);
+    ensure(24);
+    pdf.text(title, margin, y);
+    y += 30;
+    for (const b of doc.blocks) {
+      if (b.type === "heading") {
+        pdf.setFont("times", "bold").setFontSize(13);
+        const lines = pdf.splitTextToSize(b.text, maxW) as string[];
+        y += 8;
+        ensure(lines.length * 16);
+        pdf.text(lines, margin, y);
+        y += lines.length * 16 + 3;
+      } else {
+        pdf.setFont("times", "normal").setFontSize(11);
+        const lines = pdf.splitTextToSize(b.text, maxW) as string[];
+        for (const line of lines) {
+          ensure(15);
+          pdf.text(line, margin, y);
+          y += 15;
+        }
+        y += 7;
+      }
+    }
+    // page numbers
+    const pages = pdf.getNumberOfPages();
+    pdf.setFont("times", "normal").setFontSize(9).setTextColor(150);
+    for (let p = 1; p <= pages; p++) {
+      pdf.setPage(p);
+      pdf.text(`Page ${p} of ${pages}`, pageW / 2, pageH - margin / 2, { align: "center" });
+    }
+    pdf.save(title + ".edited.pdf");
+  };
+
   return (
     <div className="flex h-screen flex-col bg-neutral-50 text-neutral-900">
       <Header
@@ -198,7 +250,8 @@ export default function Editor() {
         frActive={showFR}
         onFindReplace={() => setShowFR((v) => !v)}
         onUndo={undo}
-        onExport={exportDoc}
+        onExportPdf={exportPdf}
+        onExportMd={exportDoc}
         onUpload={onUpload}
       />
 
@@ -403,7 +456,8 @@ function Header({
   frActive,
   onFindReplace,
   onUndo,
-  onExport,
+  onExportPdf,
+  onExportMd,
   onUpload,
 }: {
   docName?: string;
@@ -412,7 +466,8 @@ function Header({
   frActive: boolean;
   onFindReplace: () => void;
   onUndo: () => void;
-  onExport: () => void;
+  onExportPdf: () => void;
+  onExportMd: () => void;
   onUpload: (f: File) => void;
 }) {
   return (
@@ -444,12 +499,31 @@ function Header({
           >
             Undo
           </button>
-          <button
-            onClick={onExport}
-            className="rounded-md border border-neutral-200 px-2.5 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50"
-          >
-            Export
-          </button>
+          <details className="relative [&_summary::-webkit-details-marker]:hidden">
+            <summary className="cursor-pointer list-none rounded-md border border-neutral-200 px-2.5 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50">
+              Export
+            </summary>
+            <div className="absolute right-0 z-20 mt-1 w-40 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 shadow-lg">
+              <button
+                onClick={(e) => {
+                  onExportPdf();
+                  e.currentTarget.closest("details")?.removeAttribute("open");
+                }}
+                className="block w-full px-3 py-1.5 text-left text-xs text-neutral-700 hover:bg-sky-50"
+              >
+                PDF (edited proposal)
+              </button>
+              <button
+                onClick={(e) => {
+                  onExportMd();
+                  e.currentTarget.closest("details")?.removeAttribute("open");
+                }}
+                className="block w-full px-3 py-1.5 text-left text-xs text-neutral-700 hover:bg-sky-50"
+              >
+                Markdown
+              </button>
+            </div>
+          </details>
           <label className="cursor-pointer rounded-md bg-neutral-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-neutral-700">
             Upload
             <input
