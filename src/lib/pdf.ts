@@ -32,7 +32,7 @@ async function getPdfjs() {
   return pdfjs;
 }
 
-interface RawItem {
+export interface RawItem {
   str: string;
   x: number;
   y: number; // normalized: top-left origin (0 = top of page)
@@ -199,7 +199,7 @@ interface Column {
 //
 // Returns the columns left-to-right, or null when the page is single-column (the
 // caller then takes the original single-pass path, guaranteeing identical output).
-function detectColumns(items: RawItem[]): Column[] | null {
+export function detectColumns(items: RawItem[]): Column[] | null {
   // Too little text to reason about columns reliably.
   if (items.length < 12) return null;
 
@@ -360,7 +360,7 @@ function joinLine(items: RawItem[]): string {
 }
 
 // A short, mostly-uppercase line - the shape of an SOQ section heading.
-function isCapsHeading(text: string): boolean {
+export function isCapsHeading(text: string): boolean {
   const words = text.trim().split(/\s+/);
   if (words.length > 7) return false;
   const letters = text.replace(/[^A-Za-z]/g, "");
@@ -369,7 +369,7 @@ function isCapsHeading(text: string): boolean {
   return upper / letters.length > 0.8;
 }
 
-function classify(text: string, fontSize: number, bodyFont: number): BlockType {
+export function classify(text: string, fontSize: number, bodyFont: number): BlockType {
   const words = text.split(/\s+/).length;
   if (fontSize >= bodyFont * 1.2 && words <= 12) return "heading";
   if (/^[•\-•▪]/.test(text) || /^[A-Z][a-z]+,\s(MO|IL)\b/.test(text))
