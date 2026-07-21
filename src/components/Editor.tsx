@@ -16,6 +16,9 @@ export default function Editor() {
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<EditRecord[]>([]);
   const cache = useRef<Map<string, { doc: ParsedDoc; buf: ArrayBuffer }>>(new Map());
+  // Monotonic id used to drop stale in-flight edit responses when the user
+  // switches blocks or starts another edit before the previous one returns.
+  const reqRef = useRef(0);
 
   const editedIds = useMemo(
     () => new Set((doc?.blocks ?? []).filter((b) => b.text !== b.original).map((b) => b.id)),
@@ -62,10 +65,12 @@ export default function Editor() {
 
   const runEdit = async (action: string, instruction: string, useKb: boolean) => {
     if (!selectedBlock || !doc) return;
+    const target = selectedBlock; // pin the block; selection may change mid-request
+    const myReq = ++reqRef.current;
     setLoading(true);
     setError(null);
     setProposal(null);
-    const idx = doc.blocks.findIndex((b) => b.id === selectedBlock.id);
+    const idx = doc.blocks.findIndex((b) => b.id === target.id);
     const heading = [...doc.blocks.slice(0, idx)].reverse().find((b) => b.type === "heading")?.text;
     try {
       const res = await fetch("/api/edit", {
@@ -74,7 +79,7 @@ export default function Editor() {
         body: JSON.stringify({
           action,
           instruction,
-          blockText: selectedBlock.text,
+          blockText: target.text,
           heading,
           before: doc.blocks[idx - 1]?.text,
           after: doc.blocks[idx + 1]?.text,
@@ -83,10 +88,11 @@ export default function Editor() {
         }),
       });
       const data = await res.json();
+      if (reqRef.current !== myReq) return; // user moved on; discard stale result
       if (!res.ok) throw new Error(data.error || "Edit failed.");
       setProposal({
-        blockId: selectedBlock.id,
-        before: selectedBlock.text,
+        blockId: target.id,
+        before: target.text,
         after: data.newText,
         rationale: data.rationale ?? "",
         usedFacts: data.usedFacts ?? [],
@@ -95,9 +101,10 @@ export default function Editor() {
         kbUsed: data.kbUsed ?? 0,
       });
     } catch (e) {
+      if (reqRef.current !== myReq) return;
       setError(e instanceof Error ? e.message : "Edit failed.");
     } finally {
-      setLoading(false);
+      if (reqRef.current === myReq) setLoading(false);
     }
   };
 
@@ -181,8 +188,11 @@ export default function Editor() {
             selectedId={selectedId}
             editedIds={editedIds}
             onSelect={(id) => {
+              reqRef.current++; // invalidate any in-flight edit for the old block
               setSelectedId(id);
               setProposal(null);
+              setError(null);
+              setLoading(false);
             }}
           />
           <div className="bg-white">
@@ -219,6 +229,13 @@ function DocPane({
         <div className="mb-4 text-[11px] font-semibold uppercase tracking-wide text-neutral-400">
           Editable document
         </div>
+        {doc.blocks.length === 0 && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+            No selectable text was found in this PDF. It may be scanned or
+            image-only. The original is still viewable on the left, but
+            paragraph editing needs a text layer (OCR support is on the roadmap).
+          </div>
+        )}
         {doc.blocks.map((b) => {
           const sel = b.id === selectedId;
           const edited = editedIds.has(b.id);

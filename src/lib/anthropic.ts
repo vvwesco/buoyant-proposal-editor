@@ -64,7 +64,10 @@ Call propose_edit with the revised paragraph.`;
 
   const resp = await client.messages.create({
     model,
-    max_tokens: 1500,
+    // Generous headroom: a paragraph rewrite is short, but merged multi-column
+    // blocks from a complex PDF can be long; we would rather pay tokens than
+    // truncate. Truncation is still caught below via stop_reason.
+    max_tokens: 4000,
     system: SYSTEM,
     tools: [
       {
@@ -96,6 +99,15 @@ Call propose_edit with the revised paragraph.`;
     messages: [{ role: "user", content: user }],
   });
 
+  // If the model ran out of output budget, the tool JSON is truncated and
+  // newText is silently cut off. Surface that instead of letting the user
+  // Apply a paragraph that loses its tail.
+  if (resp.stop_reason === "max_tokens") {
+    throw new Error(
+      "The edit was too long to complete in one response. Try a shorter paragraph or a more specific instruction.",
+    );
+  }
+
   const tool = resp.content.find((b) => b.type === "tool_use") as
     | Anthropic.ToolUseBlock
     | undefined;
@@ -105,8 +117,10 @@ Call propose_edit with the revised paragraph.`;
     rationale?: string;
     usedFacts?: string[];
   };
+  const newText = (input.newText ?? "").trim();
+  if (!newText) throw new Error("The model returned an empty edit.");
   return {
-    newText: (input.newText ?? "").trim(),
+    newText,
     rationale: input.rationale ?? "",
     usedFacts: input.usedFacts ?? [],
   };

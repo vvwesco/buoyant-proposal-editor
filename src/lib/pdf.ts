@@ -15,7 +15,8 @@ import type { ParsedDoc, Block, BlockType } from "./types";
 // pdfjs is ESM and browser-only; import lazily so it never hits the server bundle.
 async function getPdfjs() {
   const pdfjs = await import("pdfjs-dist");
-  // Worker is copied to /public by the build; see scripts/postinstall.
+  // Worker is synced to /public by scripts/copy-pdf-worker.mjs (postinstall),
+  // so it always matches the installed pdfjs-dist version.
   pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
   return pdfjs;
 }
