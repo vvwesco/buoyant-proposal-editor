@@ -128,7 +128,12 @@ export async function parsePdf(
         const bigGap = gap > prev.h * 1.8;
         const fontJump = Math.abs(ln.fontSize - prev.fontSize) > bodyFont * 0.25;
         const isHeadingLine = ln.fontSize > bodyFont * 1.25;
-        if (bigGap || fontJump || isHeadingLine) flush();
+        // Many SOQ section headings ("OUR FIRM", "RELEVANT EXPERIENCE") are set
+        // in the body font, so gap/font tests miss them. Split whenever a line
+        // crosses the all-caps-heading boundary, so a heading never absorbs the
+        // paragraph beneath it.
+        const headingTransition = isCapsHeading(prev.text) !== isCapsHeading(ln.text);
+        if (bigGap || fontJump || isHeadingLine || headingTransition) flush();
       }
       cur.push(ln);
     }
@@ -145,6 +150,16 @@ function joinLine(items: RawItem[]): string {
   let s = items.map((i) => i.str).join(" ").replace(/\s+/g, " ").trim();
   s = s.replace(/(?:\b\w\s){3,}\w\b/g, (m) => m.replace(/\s+/g, ""));
   return s;
+}
+
+// A short, mostly-uppercase line — the shape of an SOQ section heading.
+function isCapsHeading(text: string): boolean {
+  const words = text.trim().split(/\s+/);
+  if (words.length > 7) return false;
+  const letters = text.replace(/[^A-Za-z]/g, "");
+  if (letters.length < 2) return false;
+  const upper = (text.match(/[A-Z]/g) ?? []).length;
+  return upper / letters.length > 0.8;
 }
 
 function classify(text: string, fontSize: number, bodyFont: number): BlockType {
