@@ -262,16 +262,32 @@ Stretch goals and product polish delivered:
 
 ## What I'd build next given another 8 hours
 
-(The verifier pass, DOCX export, multi-column parsing, the compliance matrix with
-one-click drafted fixes, the OCR cleanup pass, and document-wide edits described above
-were the last round; next I'd do:)
+1. (The Big one) Fix exporting so that the pdf format matches original
 
-1. Strengthen the verifier with a second-model pass over what the rules flag, so the
-   deterministic check gets a semantic backstop for the entities it cannot key on.
-2. hard.pdf: build on the column detection with table recovery and 3+ column support,
-   likely a hybrid where geometry proposes blocks and an LLM cleans section boundaries.
-3. Streaming edits for perceived speed, and retry/backoff on the proxy (one hiccup should
-   not surface as a hard error).
-4. Real DOCX round-trip: write edits back into the uploaded document by block identity so
-   the firm's branding and layout survive, not just a fresh styled export.
-5. Persistence: save a document and its edit history so work survives a refresh.
+2. Better OCR, improve determination of weird layouts, sub sections, capitalization, titles, etc. (likely a hybrid where geometry proposes blocks and an LLM cleans section boundaries)
+
+3. Along same lines as prior two - Continually display edited pdf, re render it as edits are made, find way to make this less expensive
+
+4. Allow for user to live edit text on the web platform
+
+5. Locally cache the OCR cleanup step so it isn't friction every time
+
+6. Allow saving of edits to platform so that you can come back and changes persist
+
+7. Content of Compliance, Document Edit tabs should persist as you close and open them
+
+8. Allow for sharing a link that shows same tracked edits, etc. to allow team collaboration to stay on platform
+
+9. Choice of models for tasks already smart, but could be smarter, allow for manual toggling or gate by plan negotiated with Buoyant
+
+10. Windows should be collapsible and size adjustable, think Overleaf Latex editing GUI
+
+11. Raw PDF window should allow zoom in/out
+
+12. Strengthen the verifier with a second-model pass over what the rules flag, so the
+   deterministic check gets a semantic backstop for the entities it cannot key on
+   
+13. Streaming edits for perceived speed, and retry/backoff on the proxy (one hiccup should
+   not surface as a hard error)
+   
+14. Nit: Clean up domain name, landing page, beautify menu tab
