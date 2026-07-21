@@ -277,3 +277,87 @@ Call plan_edits with the paragraphs to change and a specific instruction for eac
     .map((e) => ({ blockId: e.blockId, instruction: e.instruction.trim() }));
   return { message: input?.message?.trim() || "Proposed changes:", edits };
 }
+
+// OCR cleanup: fix spacing/hyphenation artifacts from PDF extraction ("Proj ect"
+// -> "Project") with the cheap fast model, in parallel batches. The caller
+// applies a result only if it is a spacing-only change (isSpacingOnlyChange), so
+// the model can never alter content - it can only re-space it.
+const CLEANUP_SYSTEM = `You fix OCR extraction artifacts in text pulled from a PDF. For each paragraph, return the same text with ONLY spacing and hyphenation artifacts corrected:
+- rejoin a single word split by a stray space ("Proj ect" -> "Project", "w ater" -> "water")
+- separate two words wrongly glued together ("theproject" -> "the project")
+- fix line-break hyphenation ("compre- hensive" -> "comprehensive")
+- remove stray spaces before punctuation
+Do NOT change, add, or remove any words, numbers, names, or punctuation, and do NOT rephrase or fix grammar. Only adjust spacing and hyphen line-breaks. If a paragraph has no such artifacts, return it exactly unchanged. Return every paragraph by its id.`;
+
+async function cleanupBatch(
+  batch: { id: string; text: string }[],
+): Promise<{ id: string; text: string }[]> {
+  const resp = await client.messages.create({
+    model: SUGGEST_MODEL,
+    max_tokens: 8000,
+    system: CLEANUP_SYSTEM,
+    tools: [
+      {
+        name: "cleanup",
+        description: "Return each paragraph by id with spacing artifacts fixed.",
+        input_schema: {
+          type: "object",
+          properties: {
+            items: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string" },
+                  text: { type: "string" },
+                },
+                required: ["id", "text"],
+              },
+            },
+          },
+          required: ["items"],
+        },
+      },
+    ],
+    tool_choice: { type: "tool", name: "cleanup" },
+    messages: [
+      {
+        role: "user",
+        content:
+          "Paragraphs:\n" +
+          batch.map((b) => `[${b.id}] ${b.text}`).join("\n\n") +
+          "\n\nCall cleanup with each paragraph's corrected text.",
+      },
+    ],
+  });
+  const tool = resp.content.find((b) => b.type === "tool_use") as
+    | Anthropic.ToolUseBlock
+    | undefined;
+  return (tool?.input as { items?: { id: string; text: string }[] })?.items ?? [];
+}
+
+export async function cleanupBlocks(
+  blocks: { id: string; text: string }[],
+): Promise<{ id: string; text: string }[]> {
+  // Batch by cumulative character count, not block count, so a batch of large
+  // dense blocks (project lists on bio pages) never overflows the model's output
+  // budget and silently drops blocks.
+  const CHAR_BUDGET = 4000;
+  const batches: { id: string; text: string }[][] = [];
+  let cur: { id: string; text: string }[] = [];
+  let curLen = 0;
+  for (const b of blocks) {
+    if (cur.length && curLen + b.text.length > CHAR_BUDGET) {
+      batches.push(cur);
+      cur = [];
+      curLen = 0;
+    }
+    cur.push(b);
+    curLen += b.text.length;
+  }
+  if (cur.length) batches.push(cur);
+  const results = await Promise.all(
+    batches.map((b) => cleanupBatch(b).catch(() => [] as { id: string; text: string }[])),
+  );
+  return results.flat();
+}

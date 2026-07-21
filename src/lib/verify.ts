@@ -8,6 +8,33 @@
 
 export type Flag = { kind: "number" | "name"; value: string };
 
+// True when `cleaned` differs from `original` only in whitespace and hyphenation
+// (line-break hyphens). Used to gate the OCR cleanup pass: a fix like
+// "Proj ect" -> "Project" or "compre- hensive" -> "comprehensive" passes, but any
+// change to a word, number, name, or punctuation does not - so cleanup can never
+// alter content, only spacing.
+export function isSpacingOnlyChange(original: string, cleaned: string): boolean {
+  const strip = (s: string) => s.replace(/[\s\-‐-―]+/g, "");
+  return strip(original) === strip(cleaned);
+}
+
+// Apply the model's RE-SPACING while forcing the ORIGINAL characters. This lets
+// cleanup fix spacing/hyphenation even when the model also tried to change a
+// letter (a common OCR "I"/"l" or "1" swap) - the letter change is reverted, the
+// spacing kept. Returns null (reject) if the model added or removed real
+// characters, which would be a content change we refuse to apply. This makes the
+// cleanup pass unable to alter content, only whitespace.
+export function respaceWithOriginalChars(original: string, cleaned: string): string | null {
+  const isSep = (c: string) => /[\s\-‐-―]/.test(c);
+  const oChars = [...original].filter((c) => !isSep(c));
+  const cChars = [...cleaned].filter((c) => !isSep(c));
+  if (oChars.length !== cChars.length) return null;
+  let oi = 0;
+  let out = "";
+  for (const c of cleaned) out += isSep(c) ? c : oChars[oi++];
+  return out;
+}
+
 const CONNECTORS = new Set(["of", "and", "the", "for", "de", "on", "at", "&"]);
 
 // Pull runs of Capitalized words (allowing lowercase connectors mid-phrase) as

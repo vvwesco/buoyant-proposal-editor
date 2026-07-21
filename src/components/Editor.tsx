@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ParsedDoc, Suggestion } from "@/lib/types";
 import { parsePdf } from "@/lib/pdf";
 import { literalReplaceAll, countMatches } from "@/lib/replace";
+import { respaceWithOriginalChars } from "@/lib/verify";
 import PdfPane from "./PdfPane";
 import EditPanel, { type Proposal } from "./EditPanel";
 import CompliancePanel from "./CompliancePanel";
@@ -14,6 +15,42 @@ type Change = { blockId: string; before: string; after: string };
 type Op = { id: string; label: string; changes: Change[] };
 
 const EMPTY_SET: Set<string> = new Set();
+
+// Best-effort OCR cleanup: ask a cheap model to fix spacing/hyphenation artifacts
+// in the body paragraphs, and apply a result only when it is a spacing-only change
+// (so content can never be altered). Runs once at load so these typos never show
+// up later as suggested edits. On any failure it returns the doc unchanged.
+async function cleanupDoc(parsed: ParsedDoc): Promise<ParsedDoc> {
+  // Include headings and short section titles too - OCR splits like
+  // "Proj ect Experience" often land in those. Skip only trivially short tokens.
+  const candidates = parsed.blocks.filter((b) => b.text.trim().length >= 10);
+  if (!candidates.length) return parsed;
+  try {
+    const res = await fetch("/api/cleanup", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ blocks: candidates.map((b) => ({ id: b.id, text: b.text })) }),
+    });
+    const data = await res.json();
+    const map = new Map<string, string>(
+      ((data.items ?? []) as { id: string; text: string }[]).map((i) => [i.id, i.text]),
+    );
+    let changed = 0;
+    const blocks = parsed.blocks.map((b) => {
+      const c = map.get(b.id);
+      // Keep the model's spacing but the original characters (content-safe).
+      const fixed = c ? respaceWithOriginalChars(b.text, c) : null;
+      if (fixed && fixed !== b.text) {
+        changed++;
+        return { ...b, text: fixed, original: fixed }; // cleaned text is the new baseline
+      }
+      return b;
+    });
+    return changed ? { ...parsed, blocks } : parsed;
+  } catch {
+    return parsed;
+  }
+}
 
 // Content hash so re-uploading the exact same bytes reuses the cached parse,
 // while a different file that happens to share a name/size does not collide.
@@ -29,6 +66,7 @@ export default function Editor() {
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
   const [fileBuf, setFileBuf] = useState<ArrayBuffer | null>(null);
   const [parsing, setParsing] = useState<{ page: number; total: number } | null>(null);
+  const [cleaning, setCleaning] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [loading, setLoading] = useState(false);
@@ -37,6 +75,7 @@ export default function Editor() {
   const [showFR, setShowFR] = useState(false);
   const [showCompliance, setShowCompliance] = useState(false);
   const [showChat, setShowChat] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [trackChanges, setTrackChanges] = useState(true);
   const [sessionKb, setSessionKb] = useState<{ name: string; text: string }[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -117,13 +156,17 @@ export default function Editor() {
     setParsing({ page: 0, total: 0 });
     try {
       const parsed = await parsePdf(buf, name, (page, total) => setParsing({ page, total }));
-      cache.current.set(key, { doc: parsed, buf });
+      setParsing(null);
+      setCleaning(true);
+      const cleaned = await cleanupDoc(parsed); // best-effort OCR spacing fixes
+      cache.current.set(key, { doc: cleaned, buf });
       setFileBuf(buf);
-      setDoc(parsed);
+      setDoc(cleaned);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to parse PDF.");
     } finally {
       setParsing(null);
+      setCleaning(false);
     }
   }, []);
 
@@ -283,7 +326,7 @@ export default function Editor() {
 
   const exportBase = () => (doc ? doc.fileName.replace(/\.pdf$/i, "") + " - edited" : "proposal");
 
-  const exportDoc = () => {
+  const exportMd = (name: string) => {
     if (!doc) return;
     const md = doc.blocks
       .map((b) => (b.type === "heading" ? `## ${b.text}` : b.text))
@@ -291,7 +334,7 @@ export default function Editor() {
     const blob = new Blob([md], { type: "text/markdown" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = exportBase() + ".md";
+    a.download = name + ".md";
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -299,7 +342,7 @@ export default function Editor() {
   // Export the edited document as a clean, readable PDF. Not a pixel copy of the
   // original (the brief says that isn't the point) but a real, paginated PDF a
   // client could hand off: title, bold section headings, wrapped body, footer.
-  const exportPdf = async () => {
+  const exportPdf = async (name: string) => {
     if (!doc) return;
     const { jsPDF } = await import("jspdf");
     const pdf = new jsPDF({ unit: "pt", format: "letter" });
@@ -314,10 +357,9 @@ export default function Editor() {
         y = margin;
       }
     };
-    const title = doc.fileName.replace(/\.pdf$/i, "");
     pdf.setFont("times", "bold").setFontSize(18);
     ensure(24);
-    pdf.text(title, margin, y);
+    pdf.text(name, margin, y);
     y += 30;
     for (const b of doc.blocks) {
       if (b.type === "heading") {
@@ -345,16 +387,16 @@ export default function Editor() {
       pdf.setPage(p);
       pdf.text(`Page ${p} of ${pages}`, pageW / 2, pageH - margin / 2, { align: "center" });
     }
-    pdf.save(exportBase() + ".pdf");
+    pdf.save(name + ".pdf");
   };
 
   // Export as a Word document - the surface AEC proposal writers actually live
   // in and round-trip through. Headings map to Word heading styles.
-  const exportDocx = async () => {
+  const exportDocx = async (name: string) => {
     if (!doc) return;
     const { Document, Packer, Paragraph, HeadingLevel } = await import("docx");
     const children = [
-      new Paragraph({ text: exportBase(), heading: HeadingLevel.TITLE }),
+      new Paragraph({ text: name, heading: HeadingLevel.TITLE }),
       ...doc.blocks.map((b) =>
         b.type === "heading"
           ? new Paragraph({ text: b.text, heading: HeadingLevel.HEADING_2 })
@@ -364,9 +406,18 @@ export default function Editor() {
     const blob = await Packer.toBlob(new Document({ sections: [{ children }] }));
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = exportBase() + ".docx";
+    a.download = name + ".docx";
     a.click();
     URL.revokeObjectURL(a.href);
+  };
+
+  // Dispatch export by format with a user-chosen filename (sanitized).
+  const runExport = (rawName: string, format: "docx" | "pdf" | "md") => {
+    const name = (rawName.trim() || exportBase()).replace(/[\\/:*?"<>|]+/g, "").replace(/\.(docx|pdf|md)$/i, "");
+    if (format === "md") exportMd(name);
+    else if (format === "pdf") exportPdf(name);
+    else exportDocx(name);
+    setExportOpen(false);
   };
 
   // Shared selection used by both panes so clicking in one highlights the other.
@@ -402,9 +453,7 @@ export default function Editor() {
         onRevertAll={revertAll}
         onFindReplace={() => setShowFR((v) => !v)}
         onUndo={undo}
-        onExportPdf={exportPdf}
-        onExportDocx={exportDocx}
-        onExportMd={exportDoc}
+        onExport={() => setExportOpen(true)}
         onAddKb={onAddKb}
         onRemoveKb={removeKb}
         onReplaceDoc={onUpload}
@@ -414,14 +463,17 @@ export default function Editor() {
         <FindReplaceBar doc={doc} onReplace={findReplace} onClose={() => setShowFR(false)} />
       )}
 
-      {!doc && !parsing && <Landing onSample={loadSample} onUpload={onUpload} error={error} />}
+      {!doc && !parsing && !cleaning && (
+        <Landing onSample={loadSample} onUpload={onUpload} error={error} />
+      )}
 
-      {parsing && (
+      {(parsing || cleaning) && (
         <div className="flex flex-1 flex-col items-center justify-center gap-3 text-neutral-500">
           <div className="h-8 w-8 animate-spin rounded-full border-2 border-neutral-300 border-t-sky-600" />
           <p className="text-sm">
-            Recovering document structure
-            {parsing.total ? ` - page ${parsing.page}/${parsing.total}` : "..."}
+            {parsing
+              ? `Recovering document structure${parsing.total ? ` - page ${parsing.page}/${parsing.total}` : "..."}`
+              : "Cleaning up extracted text..."}
           </p>
         </div>
       )}
@@ -469,6 +521,89 @@ export default function Editor() {
           </div>
         </div>
       )}
+
+      {exportOpen && doc && (
+        <ExportDialog
+          defaultName={exportBase()}
+          onExport={runExport}
+          onClose={() => setExportOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ExportDialog({
+  defaultName,
+  onExport,
+  onClose,
+}: {
+  defaultName: string;
+  onExport: (name: string, format: "docx" | "pdf" | "md") => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(defaultName);
+  const [format, setFormat] = useState<"docx" | "pdf" | "md">("docx");
+  const ext = { docx: ".docx", pdf: ".pdf", md: ".md" }[format];
+  const formats: { id: "docx" | "pdf" | "md"; label: string }[] = [
+    { id: "docx", label: "Word (.docx)" },
+    { id: "pdf", label: "PDF" },
+    { id: "md", label: "Markdown" },
+  ];
+  return (
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/30 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-sm rounded-lg bg-white p-4 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-3 text-sm font-semibold text-neutral-800">Export document</div>
+        <label className="mb-1 block text-xs font-medium text-neutral-500">File name</label>
+        <div className="flex items-center rounded-md border border-neutral-300 focus-within:border-sky-400 focus-within:ring-2 focus-within:ring-sky-100">
+          <input
+            autoFocus
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && onExport(name, format)}
+            className="min-w-0 flex-1 rounded-l-md px-2 py-1.5 text-sm outline-none"
+          />
+          <span className="px-2 text-xs text-neutral-400">{ext}</span>
+        </div>
+        <div className="mb-4 mt-3">
+          <div className="mb-1 text-xs font-medium text-neutral-500">Format</div>
+          <div className="flex gap-1.5">
+            {formats.map((f) => (
+              <button
+                key={f.id}
+                onClick={() => setFormat(f.id)}
+                className={`rounded-md border px-2.5 py-1 text-xs font-medium ${
+                  format === f.id
+                    ? "border-sky-400 bg-sky-50 text-sky-700"
+                    : "border-neutral-200 text-neutral-700 hover:bg-neutral-50"
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="rounded-md border border-neutral-200 px-3 py-1.5 text-sm font-medium text-neutral-600 hover:bg-neutral-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onExport(name, format)}
+            className="rounded-md bg-sky-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-sky-700"
+          >
+            Download
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -641,9 +776,7 @@ function Header({
   onRevertAll,
   onFindReplace,
   onUndo,
-  onExportPdf,
-  onExportDocx,
-  onExportMd,
+  onExport,
   onAddKb,
   onRemoveKb,
   onReplaceDoc,
@@ -663,17 +796,13 @@ function Header({
   onRevertAll: () => void;
   onFindReplace: () => void;
   onUndo: () => void;
-  onExportPdf: () => void;
-  onExportDocx: () => void;
-  onExportMd: () => void;
+  onExport: () => void;
   onAddKb: (files: FileList) => void;
   onRemoveKb: (name: string) => void;
   onReplaceDoc: (f: File) => void;
 }) {
   const btn =
     "rounded-md border border-neutral-200 px-2.5 py-1 text-xs font-medium text-neutral-700 hover:bg-neutral-50";
-  const closeMenu = (e: { currentTarget: HTMLElement }) =>
-    e.currentTarget.closest("details")?.removeAttribute("open");
   return (
     <header className="flex items-center justify-between border-b border-neutral-200 bg-white px-4 py-2.5">
       <button
@@ -778,20 +907,9 @@ function Header({
             </div>
           </details>
 
-          <details className="relative [&_summary::-webkit-details-marker]:hidden">
-            <summary className={`${btn} cursor-pointer list-none`}>Export</summary>
-            <div className="absolute right-0 z-20 mt-1 w-44 overflow-hidden rounded-md border border-neutral-200 bg-white py-1 shadow-lg">
-              <button onClick={(e) => { onExportDocx(); closeMenu(e); }} className="block w-full px-3 py-1.5 text-left text-xs text-neutral-700 hover:bg-sky-50">
-                Word (.docx)
-              </button>
-              <button onClick={(e) => { onExportPdf(); closeMenu(e); }} className="block w-full px-3 py-1.5 text-left text-xs text-neutral-700 hover:bg-sky-50">
-                PDF
-              </button>
-              <button onClick={(e) => { onExportMd(); closeMenu(e); }} className="block w-full px-3 py-1.5 text-left text-xs text-neutral-700 hover:bg-sky-50">
-                Markdown
-              </button>
-            </div>
-          </details>
+          <button onClick={onExport} className={btn}>
+            Export
+          </button>
 
           <label className="cursor-pointer rounded-md bg-neutral-900 px-2.5 py-1 text-xs font-medium text-white hover:bg-neutral-700">
             Open PDF

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { wordDiff, retainedFraction } from "@/lib/diffWords";
 import { retrieveKb } from "@/lib/kb";
 import { isCapsHeading, classify, detectColumns, dedupeItems, type RawItem } from "@/lib/pdf";
-import { unverifiedAdditions } from "@/lib/verify";
+import { unverifiedAdditions, isSpacingOnlyChange, respaceWithOriginalChars } from "@/lib/verify";
 import { literalReplaceAll, countMatches } from "@/lib/replace";
 
 describe("wordDiff / retainedFraction", () => {
@@ -86,6 +86,35 @@ describe("literalReplaceAll / countMatches", () => {
   });
   it("treats the search term literally (regex chars escaped)", () => {
     expect(countMatches("a.b a.b axb", "a.b", false)).toBe(2);
+  });
+});
+
+describe("isSpacingOnlyChange (OCR cleanup guard)", () => {
+  it("accepts pure spacing and hyphenation fixes", () => {
+    expect(isSpacingOnlyChange("Proj ect Experience", "Project Experience")).toBe(true);
+    expect(isSpacingOnlyChange("compre- hensive plan", "comprehensive plan")).toBe(true);
+    expect(isSpacingOnlyChange("theproject scope", "the project scope")).toBe(true);
+    expect(isSpacingOnlyChange("services .", "services.")).toBe(true);
+  });
+  it("rejects any change to words, numbers, or facts", () => {
+    expect(isSpacingOnlyChange("the team of five", "the group of five")).toBe(false);
+    expect(isSpacingOnlyChange("5,200 LF of pipe", "5,300 LF of pipe")).toBe(false);
+    expect(isSpacingOnlyChange("City of Dixon", "City of Rolla")).toBe(false);
+  });
+});
+
+describe("respaceWithOriginalChars", () => {
+  it("keeps the model's spacing but the original characters", () => {
+    // model fixed "Proj ect" spacing but also swapped I->l; we keep spacing, revert the letter
+    expect(respaceWithOriginalChars("Proj ect If main", "Project lf main")).toBe("Project If main");
+    expect(respaceWithOriginalChars("compre- hensive", "comprehensive")).toBe("comprehensive");
+  });
+  it("reverts a same-length letter/number substitution back to the original", () => {
+    // model tried "200" -> "300"; same char count, so we keep the original digits
+    expect(respaceWithOriginalChars("5,200 LF", "5,300 LF")).toBe("5,200 LF");
+  });
+  it("returns null when the model added or removed real characters", () => {
+    expect(respaceWithOriginalChars("the team", "the group")).toBeNull();
   });
 });
 
